@@ -1,0 +1,93 @@
+# Environment Settings
+environment:
+  width: 200
+  height: 200
+  num_sensors: 50
+  num_obstacles: 5
+  coverage_ratio: 0.2
+
+# Path Representation
+path:
+  dx: 5
+  length_max: 2000.0
+
+# Exposure Calculation
+exposure:
+  step: 1.0
+
+# Repair Parameters
+repair:
+  attempts: 100
+
+# Sensor & Obstacle Settings
+sensor:
+  radius_min: 5
+  radius_max: 50
+  power: 1.0
+
+obstacle:
+  min_distance: 5
+  min_area: 50
+  radius_min: 15
+  radius_max: 75
+  vertices_min: 4
+  vertices_max: 8
+
+algorithm:
+
+  sac:
+    pop_size: 40
+    n_generations: 100
+    updates_per_ep: 10
+    batch_size: 128
+
+    hidden_size: 256
+    lr: 0.001
+
+    alpha_init: 1.0
+    tau: 0.005
+
+    action_scale: 15.0
+    w1: 0.9
+    w2: 0.1
+    window_size: 5
+
+
+  moead:
+    pop_size: 100
+    n_generations: 100
+    neighborhood_size: 15
+    crossover_prob: 0.9
+    mutation_prob: 0.4
+    eta_c: 10
+    eta_m: 10
+
+
+  ppo:
+      n_steps: 2048          # Số bước chạy trước khi cập nhật
+      batch_size: 64         # Kích thước batch để training
+      n_epochs: 10           # Số lần training lại trên cùng dữ liệu
+      lr: 0.0003             # Learning rate
+      gamma: 0.99            # Hệ số chiết khấu (Discount factor)
+      gae_lambda: 0.95       # Hệ số GAE để tính advantage
+      clip_range: 0.3        # Tham số chặn của PPO
+      ent_coef: 0.04         # Hệ số entropy để khuyến khích khám phá
+      pop_size: 1            # Thường PPO chạy đơn lẻ hoặc song song, ở đây ta chạy đơn
+      n_generations: 200     # Số tập (episodes) training
+
+
+  td3:
+    pop_size: 1 # TD3 thường chạy đơn lẻ hoặc theo tập (episode)
+    n_episodes: 500
+    batch_size: 128
+    hidden_size: 256
+    lr: 0.0003
+    gamma: 0.99
+    tau: 0.005
+    policy_noise: 2.0
+    noise_clip: 5.0
+    policy_freq: 2
+    max_replay_buffer: 100000
+    exploration_noise: 5.0
+    w_exp: 0.8 # Trọng số cho Exposure
+    w_len: 0.2 # Trọng số cho Length
