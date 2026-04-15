@@ -7,6 +7,9 @@ import numpy as np
 from general.point import Point
 from general.path import Path
 
+import math
+from shapely.geometry import Point as ShapelyPoint, LineString
+
 
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_size=256):
@@ -56,7 +59,8 @@ class PPO:
         self.dx = 5
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        self.state_dim = 3
+        # Đổi state_dim thành 10 để chứa thêm thông tin cảm biến radar
+        self.state_dim = 10
         self.action_dim = 1
         self.action_scale = 8.0
 
@@ -75,15 +79,53 @@ class PPO:
         self.MseLoss = nn.MSELoss()
         self.EP = []
 
+    def get_state(self, x, y, prev_action):
+        """
+        Tạo state có tính năng 'Radar' để phát hiện chướng ngại vật
+        """
+        # 1. Các thông số cơ bản (Tọa độ chuẩn hóa)
+        dist_top = (self.env.height - y) / self.env.height
+        dist_bottom = y / self.env.height
+        base_features = [x / self.env.width, y / self.env.height, prev_action, dist_top, dist_bottom]
+
+        # 2. Phát tia Radar (kiểm tra 5 điểm xung quanh phía trước)
+        look_ahead = self.dx * 2.0
+        look_side = self.action_scale * 2.0
+
+        points_to_check = [
+            ShapelyPoint(x + look_ahead, y),  # Phía trước
+            ShapelyPoint(x + look_ahead, min(y + look_side, self.env.height)),  # Chéo lên
+            ShapelyPoint(x + look_ahead, max(y - look_side, 0)),  # Chéo xuống
+            ShapelyPoint(x, min(y + look_side, self.env.height)),  # Ngay phía trên
+            ShapelyPoint(x, max(y - look_side, 0))  # Ngay phía dưới
+        ]
+
+        obs_features = [1.0] * 5  # 1.0 nghĩa là an toàn tuyệt đối
+        for i, pt in enumerate(points_to_check):
+            for obs in self.env.obstacles:
+                if obs.polygon.contains(pt):
+                    obs_features[i] = 0.0  # Vật cản ngay tại đây
+                    break
+                else:
+                    # Tính khoảng cách tới vật cản, chuẩn hóa về 0 -> 1 (0 là sát vách, 1 là cách xa)
+                    d = obs.polygon.distance(pt)
+                    norm_d = min(d, 20.0) / 20.0
+                    if norm_d < obs_features[i]:
+                        obs_features[i] = norm_d
+
+        return np.array(base_features + obs_features, dtype=np.float32)
+
     def select_action(self, state):
         with torch.no_grad():
             state = torch.FloatTensor(state)
             dist, _ = self.policy_old(state)
             action = dist.sample()
-
         return action.item(), dist.log_prob(action).item()
 
     def update_ppo(self, states, actions, logprobs, rewards):
+        # Nếu episode kết thúc sớm do va chạm, hàm này vẫn hoạt động bình thường
+        if len(rewards) == 0: return
+
         returns = []
         discounted_reward = 0
 
@@ -92,7 +134,9 @@ class PPO:
             returns.insert(0, discounted_reward)
 
         returns = torch.tensor(returns, dtype=torch.float32)
-        returns = (returns - returns.mean()) / (returns.std() + 1e-7)
+        # Chuẩn hóa lợi tức (giúp huấn luyện ổn định)
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-7)
 
         old_states = torch.FloatTensor(np.array(states))
         old_actions = torch.FloatTensor(np.array(actions)).unsqueeze(1)
@@ -103,6 +147,10 @@ class PPO:
                 old_states, old_actions
             )
             state_values = state_values.squeeze()
+
+            # Nếu state_values có size 0 (do batch=1), cần reshape lại để ko lỗi
+            if state_values.dim() == 0:
+                state_values = state_values.unsqueeze(0)
 
             ratios = torch.exp(logprobs - old_logprobs.detach())
             advantages = returns - state_values.detach()
@@ -127,7 +175,6 @@ class PPO:
 
     def evaluate_path(self, points):
         path = Path(points)
-
         if not self.env.is_valid_path(path):
             return float('inf'), float('inf')
 
@@ -137,7 +184,6 @@ class PPO:
             obstacles=self.env.obstacles
         )
         length = path.length()
-
         return -exp, length
 
     def update_ep(self, points, objs):
@@ -164,64 +210,97 @@ class PPO:
             states, actions, log_probs, rewards = [], [], [], []
 
             state_y = self.env.height / 2
+            prev_x = self.xs[0]
             prev_action = 0.0
-            current_points = [Point(self.xs[0], state_y)]
+            current_points = [Point(prev_x, state_y)]
+
+            crashed = False
 
             for x in self.xs[1:]:
-                state = np.array([
-                    x / self.env.width,
-                    state_y / self.env.height,
-                    prev_action
-                ])
+                # 1. Lấy State có Radar
+                state = self.get_state(prev_x, state_y, prev_action)
 
                 action, log_prob = self.select_action(state)
 
                 raw_next_y = state_y + action * self.action_scale
                 next_y = np.clip(raw_next_y, 0, self.env.height)
 
-                step_reward = 0.0
+                prev_point = Point(prev_x, state_y)
+                next_point = Point(x, next_y)
+                next_shapely = ShapelyPoint(x, next_y)
 
-                smoothness_penalty = abs(action - prev_action) * 0.5
-                step_reward -= smoothness_penalty
+                # --- REWARD FUNCTION CHUẨN ---
+                step_reward = 1.0  # Thưởng +1 cho mỗi bước tiến tới thành công (Giúp hạn chế crash)
 
-                margin = self.env.height * 0.15
+                # Phạt di chuyển zig-zag
+                step_reward -= abs(action - prev_action) * 0.1
+                step_reward -= abs(action) * 0.05
 
-                if next_y < margin:
-                    step_reward -= ((margin - next_y) / margin) * 1.5
-                elif next_y > self.env.height - margin:
-                    step_reward -= ((next_y - (self.env.height - margin)) / margin) * 1.5
+                # Kiểm tra đâm vào viền bản đồ
+                if raw_next_y <= 0 or raw_next_y >= self.env.height:
+                    crashed = True
 
-                if raw_next_y < 0 or raw_next_y > self.env.height:
-                    step_reward -= 2.0
+                # Kiểm tra va chạm với vật cản
+                for obs in self.env.obstacles:
+                    # Kiểm tra xem đường đi (LineString) có cắt qua vật cản không (Chuẩn xác nhất)
+                    if obs.intersects(prev_point, next_point):
+                        crashed = True
+                        break
+                    else:
+                        # Thêm hình phạt nếu đi QUÁ GẦN vật cản (Proximity Penalty)
+                        dist = obs.polygon.distance(next_shapely)
+                        if dist < 4.0:
+                            step_reward -= (4.0 - dist) * 0.5  # Càng sát càng trừ nhiều
 
                 states.append(state)
                 actions.append(action)
                 log_probs.append(log_prob)
+
+                # --- ĐIỀU KIỆN DỪNG SỚM NẾU CRASH ---
+                if crashed:
+                    # Phạt cực nặng nếu đâm vào vật cản (-100) nhưng cộng điểm an ủi bằng quãng đường đi được
+                    progress_bonus = (x / self.env.width) * 50.0
+                    rewards.append(step_reward - 100.0 + progress_bonus)
+                    current_points.append(next_point)
+                    break  # Kết thúc ngay episode này để không tính thêm step rác
+
                 rewards.append(step_reward)
 
+                # Chuyển qua step sau
                 state_y = next_y
+                prev_x = x
                 prev_action = action
-                current_points.append(Point(x, state_y))
+                current_points.append(next_point)
 
-            objs = self.evaluate_path(current_points)
-            self.update_ep(current_points, objs)
+            # --- TÍNH PHẦN THƯỞNG KẾT THÚC (Nếu đến đích thành công) ---
+            if not crashed:
+                objs = self.evaluate_path(current_points)
+                self.update_ep(current_points, objs)
 
-            if objs[0] == float('inf'):
-                terminal_reward = -50.0
+                if objs[0] != float('inf'):
+                    actual_exposure = -objs[0]
+                    actual_length = objs[1]
+
+                    # Thưởng đậm +50 vì đã đến tới đích thành công, và tối ưu hóa Exp/Len
+                    terminal_reward = 50.0 + (actual_exposure * 1.5) - (actual_length * 0.05)
+                    rewards[-1] += terminal_reward
             else:
-                terminal_reward = (objs[0] * 1.0) - (objs[1] * 0.05)
+                objs = [float('inf'), float('inf')]
 
-            rewards[-1] += terminal_reward
-
+            # Cập nhật Neural Network
             self.update_ppo(states, actions, log_probs, rewards)
 
             if verbose and episode % 10 == 0:
                 total_reward = sum(rewards)
                 best_exp = -objs[0] if objs[0] != float('inf') else "Crash"
+                # Tính % quãng đường đi được
+                progress_pct = (prev_x / self.env.width) * 100
 
                 print(
-                    f"Gen {episode}/{self.max_episodes} | "
-                    f"Total Reward: {total_reward:.2f} | Exp: {best_exp}"
+                    f"Gen {episode:3d}/{self.max_episodes} | "
+                    f"Total Rwd: {total_reward:6.1f} | "
+                    f"Progress: {progress_pct:5.1f}% | "
+                    f"Exp: {best_exp}"
                 )
 
             if callback:
