@@ -68,7 +68,7 @@ def plot_final_solutions(env, solutions, best_solution, save_path):
     for sol in solutions:
         path = np.array(sol['path'])
         if len(path) > 0:
-            ax.plot(path[:, 0], path[:, 1], color='green', linewidth=0.8, alpha=0.2, zorder=3)
+            ax.plot(path[:, 0], path[:, 1], color='green', linewidth=1, alpha=0.7, zorder=3)
 
     if best_solution:
         path = np.array(best_solution['path'])
@@ -98,7 +98,7 @@ def plot_snapshot(env, solutions, gen, save_path):
     for sol in solutions:
         path = np.array(sol['path'])
         if len(path) > 0:
-            ax.plot(path[:, 0], path[:, 1], color='green', linewidth=0.5, alpha=0.3, zorder=3)
+            ax.plot(path[:, 0], path[:, 1], color='green', linewidth=1, alpha=0.7, zorder=3)
 
     if gen > 0:
         best_sol = find_knee_solution(solutions)
