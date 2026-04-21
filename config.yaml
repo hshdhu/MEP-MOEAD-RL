@@ -66,14 +66,14 @@ algorithm:
   ppo:
       n_steps: 2048          # Số bước chạy trước khi cập nhật
       batch_size: 64         # Kích thước batch để training
-      n_epochs: 10           # Số lần training lại trên cùng dữ liệu
-      lr: 0.0003             # Learning rate
+      n_epochs: 12          # Số lần training lại trên cùng dữ liệu
+      lr: 0.0001             # Learning rate
       gamma: 0.99            # Hệ số chiết khấu (Discount factor)
       gae_lambda: 0.95       # Hệ số GAE để tính advantage
       clip_range: 0.3        # Tham số chặn của PPO
       ent_coef: 0.04         # Hệ số entropy để khuyến khích khám phá
       pop_size: 1            # Thường PPO chạy đơn lẻ hoặc song song, ở đây ta chạy đơn
-      n_generations: 200     # Số tập (episodes) training
+      n_generations: 1000     # Số tập (episodes) training
 
 
   td3:

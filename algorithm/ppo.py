@@ -32,7 +32,7 @@ class ActorCritic(nn.Module):
             nn.Linear(hidden_size, 1)
         )
 
-        self.log_std = nn.Parameter(torch.zeros(1, action_dim))
+        self.log_std = nn.Parameter(torch.ones(1, action_dim) * -0.5)
 
     def forward(self, state):
         if state.dim() == 1:
@@ -78,6 +78,26 @@ class PPO:
 
         self.MseLoss = nn.MSELoss()
         self.EP = []
+
+    def get_safe_start_y_in_range(self, low, high, x=0.0):
+        max_retries = 50
+        for _ in range(max_retries):
+            y = np.random.uniform(low, high)
+            pt = ShapelyPoint(x, y)
+
+            is_safe = True
+            for obs in self.env.obstacles:
+                if obs.polygon.contains(pt) or obs.polygon.distance(pt) < 10.0:
+                    is_safe = False
+                    break
+
+            if is_safe:
+                return y
+
+        # fallback nếu xui quá
+        return self.env.height / 2
+
+
 
     def get_state(self, x, y, prev_action):
         """
@@ -209,7 +229,19 @@ class PPO:
         for episode in range(1, self.max_episodes + 1):
             states, actions, log_probs, rewards = [], [], [], []
 
-            state_y = self.env.height / 2
+            # --- Curriculum Learning ---
+            progress = episode / self.max_episodes
+            range_scale = min(1.0, progress * 2.0)  # 50% đầu mở rộng dần
+
+            center = self.env.height / 2
+            half_range = (self.env.height / 2) * range_scale
+
+            low = max(0, center - half_range)
+            high = min(self.env.height, center + half_range)
+
+            # --- Safe Spawn ---
+            state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
+
             prev_x = self.xs[0]
             prev_action = 0.0
             current_points = [Point(prev_x, state_y)]
@@ -258,11 +290,15 @@ class PPO:
 
                 # --- ĐIỀU KIỆN DỪNG SỚM NẾU CRASH ---
                 if crashed:
-                    # Phạt cực nặng nếu đâm vào vật cản (-100) nhưng cộng điểm an ủi bằng quãng đường đi được
-                    progress_bonus = (x / self.env.width) * 50.0
-                    rewards.append(step_reward - 100.0 + progress_bonus)
+                    progress_ratio = x / self.env.width  # 0 → 1
+
+                    # Chết sớm → phạt nhẹ hơn
+                    # Chết gần đích → phạt nặng hơn
+                    crash_penalty = -50.0 - (50.0 * progress_ratio)
+
+                    rewards.append(step_reward + crash_penalty)
                     current_points.append(next_point)
-                    break  # Kết thúc ngay episode này để không tính thêm step rác
+                    break
 
                 rewards.append(step_reward)
 
@@ -290,7 +326,7 @@ class PPO:
             # Cập nhật Neural Network
             self.update_ppo(states, actions, log_probs, rewards)
 
-            if verbose and episode % 10 == 0:
+            if verbose and episode % 100 == 0:
                 total_reward = sum(rewards)
                 best_exp = -objs[0] if objs[0] != float('inf') else "Crash"
                 # Tính % quãng đường đi được
