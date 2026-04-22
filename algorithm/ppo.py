@@ -229,13 +229,21 @@ class PPO:
         for episode in range(1, self.max_episodes + 1):
             states, actions, log_probs, rewards = [], [], [], []
 
-            # --- Curriculum Learning ---
+            # --- Curriculum Learning (2-Phase) ---
             progress = episode / self.max_episodes
-            range_scale = min(1.0, progress * 2.0)  # 50% đầu mở rộng dần
 
-            center = self.env.height / 2
-            half_range = (self.env.height / 2) * range_scale
+            if progress < 0.4:
+                # Phase 1: Tập trung vùng giữa để học né vật cản cơ bản (0 - 40% quá trình)
+                center = self.env.height / 2
+                range_scale = progress * 1.5  # Mở rộng chậm
+            else:
+                # Phase 2: Đã cứng cáp, bắt đầu thả random khắp bản đồ để phá bias vùng giữa
+                center = np.random.uniform(0.1 * self.env.height, 0.9 * self.env.height)
+                range_scale = 1.0  # Mở full tầm nhìn quanh center mới
 
+            half_range = (self.env.height / 2) * min(1.0, range_scale)
+
+            # Đảm bảo không bị văng ra khỏi map
             low = max(0, center - half_range)
             high = min(self.env.height, center + half_range)
 
