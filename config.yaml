@@ -77,17 +77,21 @@ algorithm:
 
 
   td3:
-    pop_size: 1 # TD3 thường chạy đơn lẻ hoặc theo tập (episode)
-    n_episodes: 500
-    batch_size: 128
-    hidden_size: 256
-    lr: 0.0003
-    gamma: 0.99
-    tau: 0.005
-    policy_noise: 2.0
-    noise_clip: 5.0
-    policy_freq: 2
-    max_replay_buffer: 100000
-    exploration_noise: 5.0
-    w_exp: 0.8 # Trọng số cho Exposure
-    w_len: 0.2 # Trọng số cho Length
+      n_episodes: 1000          # Số lượng episodes (Nên để bằng n_generations của PPO)
+      batch_size: 256           # Cỡ batch lấy từ Replay Buffer (để 256 giúp hàm loss mượt hơn)
+      hidden_size: 256          # Số node ẩn trong mạng Actor/Critic
+      lr: 0.001                 # Learning rate (TD3 có thể học với lr lớn hơn PPO một chút)
+      gamma: 0.99               # Hệ số chiết khấu
+      tau: 0.005                # Hệ số cập nhật mềm cho Target Net
+
+      # TD3 Specific Parameters
+      action_scale: 15.0        # Giới hạn dịch chuyển trục Y (Max Action).
+      exploration_noise: 2.0    # Nhiễu Gaussian thêm vào action để tìm đường mới (giảm từ 5.0 xuống 2.0 để tránh bay loạn xạ)
+      policy_noise: 2.0         # Nhiễu thêm vào Target Policy Net để chống overestimation
+      noise_clip: 5.0           # Giới hạn cắt của policy_noise
+      policy_freq: 2            # Tần suất cập nhật mạng Actor (Đặc trưng của Delayed TD3)
+      max_replay_buffer: 100000 # Kích thước bộ nhớ lưu trữ kinh nghiệm
+
+      # Reward weights (Khớp với PPO: Exp * 1.5 - Len * 0.05)
+      w_exp: 1.5                # Trọng số cho Reward Exposure
+      w_len: 0.05               # Trọng số phạt cho Reward Length
