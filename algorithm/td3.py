@@ -111,7 +111,7 @@ class TD3:
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
         # Kích thước state/action
-        self.state_dim = 10
+        self.state_dim = 13
         self.action_dim = 1
 
         # Load hyperparameters từ file config
@@ -164,14 +164,14 @@ class TD3:
         return self.env.height / 2
 
     def get_state(self, x, y, prev_action):
-        # 1. Base features (chuẩn hóa về khoảng [0, 1] hoặc [-1, 1])
+        # 1. Base features
         dist_top = (self.env.height - y) / self.env.height
         dist_bottom = y / self.env.height
-        norm_prev_action = prev_action / self.max_action  # Chuẩn hóa prev_action
+        norm_prev_action = prev_action / self.max_action
 
         base_features = [x / self.env.width, y / self.env.height, norm_prev_action, dist_top, dist_bottom]
 
-        # 2. Radar features
+        # 2. Obstacle Radar (Giữ nguyên)
         look_ahead = self.dx * 2.0
         look_side = self.max_action * 2.0
 
@@ -195,7 +195,23 @@ class TD3:
                     if norm_d < obs_features[i]:
                         obs_features[i] = norm_d
 
-        return np.array(base_features + obs_features, dtype=np.float32)
+        # 3. NEW: SENSOR RADAR (Ngửi mùi sóng)
+        # Quét 3 điểm phía trước: Giữa, Trên, Dưới xem chỗ nào có sóng mạnh
+        sensor_points = [
+            Point(x + look_ahead, y),
+            Point(x + look_ahead, min(y + look_side, self.env.height)),
+            Point(x + look_ahead, max(y - look_side, 0))
+        ]
+
+        sensor_features = [0.0, 0.0, 0.0]
+        for i, pt in enumerate(sensor_points):
+            exp_val = 0.0
+            for sensor in self.env.sensors:
+                exp_val += sensor.exposure_at(pt, obstacles=self.env.obstacles)
+            # Chuẩn hóa (giả sử max sóng tại 1 điểm rơi vào khoảng 2.0)
+            sensor_features[i] = min(exp_val / 2.0, 1.0)
+
+        return np.array(base_features + obs_features + sensor_features, dtype=np.float32)
 
     def select_action(self, state, add_noise=True):
         state = torch.FloatTensor(state.reshape(1, -1)).to(device)
@@ -322,11 +338,22 @@ class TD3:
 
                 # --- STEP REWARD ---
                 step_reward = 1.0
-                step_reward -= abs(action - prev_action) * 0.1
-                step_reward -= abs(action) * 0.05
+
+                # CHỈ phạt nhẹ nếu bẻ lái quá gắt (zigzag), bỏ phạt abs(action)
+                step_reward -= abs(action - prev_action) * 0.05
+
+                # THƯỞNG NÓNG MỖI BƯỚC: Thu được sóng là có điểm ngay!
+                step_exposure = 0.0
+                for sensor in self.env.sensors:
+                    step_exposure += sensor.exposure_on_segment(prev_point, next_point, step=1.0,
+                                                                obstacles=self.env.obstacles)
+
+                # Khuyến khích agent "uốn lượn" để thu sóng bằng cách nhân hệ số lớn
+                step_reward += (step_exposure * 2.0)
 
                 done = False
 
+                # (Giữ nguyên phần xử lý va chạm và đâm biên bên dưới...)
                 if raw_next_y <= 0 or raw_next_y >= self.env.height:
                     crashed = True
                     done = True
@@ -340,7 +367,6 @@ class TD3:
                         dist = obs.polygon.distance(next_shapely)
                         if dist < 4.0:
                             step_reward -= (4.0 - dist) * 0.5
-
                 next_state = self.get_state(x, next_y, action)
 
                 if crashed:
