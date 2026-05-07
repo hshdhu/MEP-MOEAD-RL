@@ -239,19 +239,22 @@ class PPO:
         for episode in range(1, self.max_episodes + 1):
             states, actions, log_probs, rewards = [], [], [], []
 
-            progress = episode / self.max_episodes
+            # Lựa chọn cổng xuất phát luân phiên theo Episode
+            sector = episode % 3
 
-            if progress < 0.4:
-                center = self.env.height / 2
-                range_scale = progress * 1.5
+            if sector == 0:
+                # Cổng trên (khoảng 80% chiều cao)
+                target_y = 0.8 * self.env.height
+            elif sector == 1:
+                # Cổng giữa (khoảng 50% chiều cao)
+                target_y = 0.5 * self.env.height
             else:
-                center = np.random.uniform(0.1 * self.env.height, 0.9 * self.env.height)
-                range_scale = 1.0
+                # Cổng dưới (khoảng 20% chiều cao)
+                target_y = 0.2 * self.env.height
 
-            half_range = (self.env.height / 2) * min(1.0, range_scale)
-
-            low = max(0, center - half_range)
-            high = min(self.env.height, center + half_range)
+            # Cho phép random nhẹ (+/- 5 đơn vị) quanh cổng để tránh Overfitting
+            low = max(0, target_y - 5.0)
+            high = min(self.env.height, target_y + 5.0)
 
             state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
 
