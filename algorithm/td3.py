@@ -66,15 +66,12 @@ class Actor(nn.Module):
         self.max_action = max_action
 
     def forward(self, state):
-        # Đầu ra của Tanh thuộc [-1, 1], nhân với max_action để scale về dải hợp lệ
         return self.max_action * self.net(state)
 
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_size):
         super(Critic, self).__init__()
-
-        # Q1 Architecture
         self.q1_net = nn.Sequential(
             nn.Linear(state_dim + action_dim, hidden_size),
             nn.ReLU(),
@@ -82,8 +79,6 @@ class Critic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, 1)
         )
-
-        # Q2 Architecture (Twin Critic để chống overestimation)
         self.q2_net = nn.Sequential(
             nn.Linear(state_dim + action_dim, hidden_size),
             nn.ReLU(),
@@ -110,11 +105,10 @@ class TD3:
         self.dx = 5
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # Kích thước state/action
+        # Kích thước state giống PPO (13: Base + Obs Radar + Sensor Radar)
         self.state_dim = 13
         self.action_dim = 1
 
-        # Load hyperparameters từ file config
         self.max_episodes = kwargs.get('n_episodes', 500)
         self.batch_size = kwargs.get('batch_size', 128)
         self.hidden_size = kwargs.get('hidden_size', 256)
@@ -122,24 +116,19 @@ class TD3:
         self.gamma = kwargs.get('gamma', 0.99)
         self.tau = kwargs.get('tau', 0.005)
 
-        # Các tham số Noise đặc trưng của TD3
-        self.max_action = kwargs.get('action_scale', 15.0)  # Tương ứng action_scale trong config
-        self.expl_noise = kwargs.get('exploration_noise', 5.0)
-        self.policy_noise = kwargs.get('policy_noise', 2.0)
-        self.noise_clip = kwargs.get('noise_clip', 5.0)
+        # [SỬA ĐỔI 4]: Đồng bộ action_scale (max_action) bằng 8.0 giống như PPO
+        self.max_action = kwargs.get('action_scale', 8.0)
+        self.expl_noise = kwargs.get('exploration_noise', self.max_action * 0.2)  # Thêm nhiễu 20%
+        self.policy_noise = kwargs.get('policy_noise', self.max_action * 0.2)
+        self.noise_clip = kwargs.get('noise_clip', self.max_action * 0.5)
+
         self.policy_freq = kwargs.get('policy_freq', 2)
         self.max_replay_buffer = kwargs.get('max_replay_buffer', 100000)
 
-        # Trọng số cho Terminal Reward
-        self.w_exp = kwargs.get('w_exp', 0.8)
-        self.w_len = kwargs.get('w_len', 0.2)
-
-        # Khởi tạo Actor & Target Actor
         self.actor = Actor(self.state_dim, self.action_dim, self.hidden_size, self.max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.lr)
 
-        # Khởi tạo Critic & Target Critic
         self.critic = Critic(self.state_dim, self.action_dim, self.hidden_size).to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.lr)
@@ -147,7 +136,7 @@ class TD3:
         self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=self.max_replay_buffer)
 
         self.total_it = 0
-        self.EP = []  # Lưu Pareto Front
+        self.EP = []
 
     def get_safe_start_y_in_range(self, low, high, x=0.0):
         max_retries = 50
@@ -164,14 +153,12 @@ class TD3:
         return self.env.height / 2
 
     def get_state(self, x, y, prev_action):
-        # 1. Base features
         dist_top = (self.env.height - y) / self.env.height
         dist_bottom = y / self.env.height
         norm_prev_action = prev_action / self.max_action
 
         base_features = [x / self.env.width, y / self.env.height, norm_prev_action, dist_top, dist_bottom]
 
-        # 2. Obstacle Radar (Giữ nguyên)
         look_ahead = self.dx * 2.0
         look_side = self.max_action * 2.0
 
@@ -195,8 +182,7 @@ class TD3:
                     if norm_d < obs_features[i]:
                         obs_features[i] = norm_d
 
-        # 3. NEW: SENSOR RADAR (Ngửi mùi sóng)
-        # Quét 3 điểm phía trước: Giữa, Trên, Dưới xem chỗ nào có sóng mạnh
+        # SENSOR RADAR (Ngửi mùi sóng) giống hệt PPO
         sensor_points = [
             Point(x + look_ahead, y),
             Point(x + look_ahead, min(y + look_side, self.env.height)),
@@ -208,7 +194,6 @@ class TD3:
             exp_val = 0.0
             for sensor in self.env.sensors:
                 exp_val += sensor.exposure_at(pt, obstacles=self.env.obstacles)
-            # Chuẩn hóa (giả sử max sóng tại 1 điểm rơi vào khoảng 2.0)
             sensor_features[i] = min(exp_val / 2.0, 1.0)
 
         return np.array(base_features + obs_features + sensor_features, dtype=np.float32)
@@ -219,41 +204,33 @@ class TD3:
             action = self.actor(state).cpu().data.numpy().flatten()[0]
 
         if add_noise:
-            # Thêm Exploration Noise cho TD3
             noise = np.random.normal(0, self.expl_noise)
             action = np.clip(action + noise, -self.max_action, self.max_action)
 
         return action
 
     def train(self):
-        # Chỉ train nếu buffer đủ lớn
         if self.replay_buffer.size < self.batch_size:
             return
 
         self.total_it += 1
-
         state, action, reward, next_state, done = self.replay_buffer.sample(self.batch_size)
 
         with torch.no_grad():
-            # Thêm nhiễu vào hành động mục tiêu (Target Policy Smoothing)
             noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
             next_action = (self.actor_target(next_state) + noise).clamp(-self.max_action, self.max_action)
 
-            # Lấy min của 2 hàm Q để tính Target Q (Cốt lõi của TD3 chống overestimation)
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
             target_Q = torch.min(target_Q1, target_Q2)
             target_Q = reward + (1 - done) * self.gamma * target_Q
 
-        # Lấy giá trị Q hiện tại
         current_Q1, current_Q2 = self.critic(state, action)
-
-        # Cập nhật Critic
         critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        # Cập nhật Actor trễ (Delayed Policy Updates)
         if self.total_it % self.policy_freq == 0:
             actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
 
@@ -261,7 +238,6 @@ class TD3:
             actor_loss.backward()
             self.actor_optimizer.step()
 
-            # Cập nhật Target Networks (Soft Update)
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -275,8 +251,6 @@ class TD3:
 
         exp = path.exposure(self.env.sensors, step=1.0, obstacles=self.env.obstacles)
         length = path.length()
-        # Trả về -exp để thuật toán update_ep tự động hiểu là muốn Maximize Exposure
-        # (Tìm giá trị âm nhất của -exp)
         return -exp, length
 
     def update_ep(self, points, objs):
@@ -302,20 +276,19 @@ class TD3:
         for episode in range(1, self.max_episodes + 1):
             episode_transitions = []
 
-            # --- Curriculum Learning ---
-            progress = episode / self.max_episodes
-            if progress < 0.4:
-                center = self.env.height / 2
-                range_scale = progress * 1.5
+            # [SỬA ĐỔI 1]: Đồng bộ Lựa chọn cổng xuất phát giống hệt PPO
+            sector = episode % 3
+            if sector == 0:
+                target_y = 0.8 * self.env.height
+            elif sector == 1:
+                target_y = 0.5 * self.env.height
             else:
-                center = np.random.uniform(0.1 * self.env.height, 0.9 * self.env.height)
-                range_scale = 1.0
+                target_y = 0.2 * self.env.height
 
-            half_range = (self.env.height / 2) * min(1.0, range_scale)
-            low = max(0, center - half_range)
-            high = min(self.env.height, center + half_range)
-
+            low = max(0, target_y - 5.0)
+            high = min(self.env.height, target_y + 5.0)
             state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
+
             prev_x = self.xs[0]
             prev_action = 0.0
 
@@ -326,7 +299,6 @@ class TD3:
             for i, x in enumerate(self.xs[1:]):
                 state = self.get_state(prev_x, state_y, prev_action)
 
-                # TD3 Action selection (có noise để khám phá)
                 action = self.select_action(state, add_noise=True)
 
                 raw_next_y = state_y + action
@@ -339,21 +311,22 @@ class TD3:
                 # --- STEP REWARD ---
                 step_reward = 1.0
 
-                # CHỈ phạt nhẹ nếu bẻ lái quá gắt (zigzag), bỏ phạt abs(action)
-                step_reward -= abs(action - prev_action) * 0.05
+                # [SỬA ĐỔI 3]: Chuẩn hóa công thức phạt bẻ lái gắt.
+                # PPO action nằm trong [-1, 1], còn TD3 action nằm trong [-8, 8].
+                # Phải chia cho max_action để lượng phạt tương đương nhau, tránh TD3 sợ không dám bẻ lái.
+                action_norm = action / self.max_action
+                prev_action_norm = prev_action / self.max_action
+                step_reward -= abs(action_norm - prev_action_norm) * 0.05
 
                 # THƯỞNG NÓNG MỖI BƯỚC: Thu được sóng là có điểm ngay!
                 step_exposure = 0.0
                 for sensor in self.env.sensors:
                     step_exposure += sensor.exposure_on_segment(prev_point, next_point, step=1.0,
                                                                 obstacles=self.env.obstacles)
-
-                # Khuyến khích agent "uốn lượn" để thu sóng bằng cách nhân hệ số lớn
                 step_reward += (step_exposure * 2.0)
 
                 done = False
 
-                # (Giữ nguyên phần xử lý va chạm và đâm biên bên dưới...)
                 if raw_next_y <= 0 or raw_next_y >= self.env.height:
                     crashed = True
                     done = True
@@ -367,6 +340,7 @@ class TD3:
                         dist = obs.polygon.distance(next_shapely)
                         if dist < 4.0:
                             step_reward -= (4.0 - dist) * 0.5
+
                 next_state = self.get_state(x, next_y, action)
 
                 if crashed:
@@ -379,7 +353,6 @@ class TD3:
                     total_reward += step_reward
                     break
 
-                # Nếu là bước cuối cùng (tới đích)
                 if i == len(self.xs[1:]) - 1:
                     done = True
 
@@ -397,12 +370,11 @@ class TD3:
                 self.update_ep(current_points, objs)
 
                 if objs[0] != float('inf'):
-                    actual_exposure = -objs[0]  # Khôi phục giá trị dương (Max Exposure)
+                    actual_exposure = -objs[0]
                     actual_length = objs[1]
 
-                    # Thưởng kết thúc kết hợp trọng số từ file config
-                    # w_exp = 0.8, w_len = 0.2
-                    terminal_reward = 50.0 + (actual_exposure * self.w_exp) - (actual_length * self.w_len)
+                    # [SỬA ĐỔI 2]: Đồng bộ hệ số thưởng kết thúc giống hệt PPO
+                    terminal_reward = 50.0 + (actual_exposure * 1.5) - (actual_length * 0.05)
                     total_reward += terminal_reward
 
                     # Cộng terminal_reward vào bước cuối cùng trong buffer tạm thời
@@ -414,11 +386,10 @@ class TD3:
             # --- LƯU VÀO REPLAY BUFFER VÀ TRAIN TD3 ---
             for (s, a, r, ns, d) in episode_transitions:
                 self.replay_buffer.add(s, np.array([a]), r, ns, d)
-                # TD3 là off-policy, ta train mô hình liên tục trên mỗi step (hoặc mỗi episode)
                 self.train()
 
             # --- LOGGING ---
-            if verbose and episode % 50 == 0:
+            if verbose and episode % 100 == 0:
                 best_exp = -objs[0] if objs[0] != float('inf') else "Crash"
                 progress_pct = (prev_x / self.env.width) * 100
                 print(
