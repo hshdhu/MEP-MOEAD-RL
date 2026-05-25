@@ -59,7 +59,6 @@ class PPO:
         self.dx = 5
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # [SỬA ĐỔI 1]: Đổi state_dim từ 10 thành 13 để chứa thêm 3 tia Radar dò sóng
         self.state_dim = 13
         self.action_dim = 1
         self.action_scale = 8.0
@@ -69,6 +68,8 @@ class PPO:
         self.eps_clip = kwargs.get('clip_range', 0.2)
         self.K_epochs = kwargs.get('n_epochs', 10)
         self.max_episodes = kwargs.get('n_generations', 500)
+
+        self.update_episodes = 1
 
         self.policy = ActorCritic(self.state_dim, self.action_dim)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=self.lr)
@@ -94,19 +95,13 @@ class PPO:
             if is_safe:
                 return y
 
-        # fallback nếu xui quá
         return self.env.height / 2
 
     def get_state(self, x, y, prev_action):
-        """
-        Tạo state có tính năng 'Radar' để phát hiện chướng ngại vật VÀ Sóng
-        """
-        # 1. Các thông số cơ bản (Tọa độ chuẩn hóa)
         dist_top = (self.env.height - y) / self.env.height
         dist_bottom = y / self.env.height
         base_features = [x / self.env.width, y / self.env.height, prev_action, dist_top, dist_bottom]
 
-        # 2. Phát tia Radar Vật cản (kiểm tra 5 điểm)
         look_ahead = self.dx * 2.0
         look_side = self.action_scale * 2.0
 
@@ -130,8 +125,6 @@ class PPO:
                     if norm_d < obs_features[i]:
                         obs_features[i] = norm_d
 
-        # [SỬA ĐỔI 2]: Thêm SENSOR RADAR (Ngửi mùi sóng)
-        # Quét 3 điểm phía trước: Giữa, Trên, Dưới xem chỗ nào có sóng mạnh
         sensor_points = [
             Point(x + look_ahead, y),
             Point(x + look_ahead, min(y + look_side, self.env.height)),
@@ -143,7 +136,6 @@ class PPO:
             exp_val = 0.0
             for sensor in self.env.sensors:
                 exp_val += sensor.exposure_at(pt, obstacles=self.env.obstacles)
-            # Chuẩn hóa giá trị thu được về khoảng [0, 1]
             sensor_features[i] = min(exp_val / 2.0, 1.0)
 
         return np.array(base_features + obs_features + sensor_features, dtype=np.float32)
@@ -155,26 +147,29 @@ class PPO:
             action = dist.sample()
         return action.item(), dist.log_prob(action).item()
 
-    def update_ppo(self, states, actions, logprobs, rewards):
-        if len(rewards) == 0: return
+    def update_ppo(self, states, actions, logprobs, returns):
+        if len(returns) == 0: return
 
-        returns = []
-        discounted_reward = 0
-
-        for reward in reversed(rewards):
-            discounted_reward = reward + self.gamma * discounted_reward
-            returns.insert(0, discounted_reward)
-
-        returns = torch.tensor(returns, dtype=torch.float32)
-        if len(returns) > 1:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-7)
+        returns_tensor = torch.tensor(returns, dtype=torch.float32)
 
         old_states = torch.FloatTensor(np.array(states))
         old_actions = torch.FloatTensor(np.array(actions)).unsqueeze(1)
         old_logprobs = torch.FloatTensor(np.array(logprobs)).unsqueeze(1)
 
+        # ✅ FIX CUỐI CÙNG: Tính Advantages 1 lần duy nhất ở ngoài vòng lặp
+        with torch.no_grad():
+            _, old_state_values, _ = self.policy_old.evaluate(old_states, old_actions)
+            old_state_values = old_state_values.squeeze()
+            if old_state_values.dim() == 0:
+                old_state_values = old_state_values.unsqueeze(0)
+
+        advantages = returns_tensor - old_state_values
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
+
         for _ in range(self.K_epochs):
-            logprobs, state_values, dist_entropy = self.policy.evaluate(
+            # Tính lại giá trị mới để update mạng
+            logprobs_new, state_values, dist_entropy = self.policy.evaluate(
                 old_states, old_actions
             )
             state_values = state_values.squeeze()
@@ -182,9 +177,9 @@ class PPO:
             if state_values.dim() == 0:
                 state_values = state_values.unsqueeze(0)
 
-            ratios = torch.exp(logprobs - old_logprobs.detach())
-            advantages = returns - state_values.detach()
+            ratios = torch.exp(logprobs_new - old_logprobs.detach())
 
+            # Dùng Advantages CỐ ĐỊNH đã tính ở trên
             surr1 = ratios.squeeze() * advantages
             surr2 = torch.clamp(
                 ratios.squeeze(),
@@ -193,12 +188,18 @@ class PPO:
             ) * advantages
 
             actor_loss = -torch.min(surr1, surr2)
-            critic_loss = self.MseLoss(state_values, returns)
+
+            # Critic học raw returns
+            critic_loss = self.MseLoss(state_values, returns_tensor)
 
             loss = actor_loss + 0.5 * critic_loss - 0.01 * dist_entropy.mean()
 
             self.optimizer.zero_grad()
             loss.mean().backward()
+
+            # Gradient clipping 0.5
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+
             self.optimizer.step()
 
         self.policy_old.load_state_dict(self.policy.state_dict())
@@ -236,23 +237,22 @@ class PPO:
         self.EP = new_ep
 
     def run(self, verbose=True, callback=None):
+        batch_states = []
+        batch_actions = []
+        batch_log_probs = []
+        batch_returns = []
+
         for episode in range(1, self.max_episodes + 1):
             states, actions, log_probs, rewards = [], [], [], []
 
-            # Lựa chọn cổng xuất phát luân phiên theo Episode
             sector = episode % 3
-
             if sector == 0:
-                # Cổng trên (khoảng 80% chiều cao)
                 target_y = 0.8 * self.env.height
             elif sector == 1:
-                # Cổng giữa (khoảng 50% chiều cao)
                 target_y = 0.5 * self.env.height
             else:
-                # Cổng dưới (khoảng 20% chiều cao)
                 target_y = 0.2 * self.env.height
 
-            # Cho phép random nhẹ (+/- 5 đơn vị) quanh cổng để tránh Overfitting
             low = max(0, target_y - 5.0)
             high = min(self.env.height, target_y + 5.0)
 
@@ -276,26 +276,20 @@ class PPO:
                 next_point = Point(x, next_y)
                 next_shapely = ShapelyPoint(x, next_y)
 
-                # [SỬA ĐỔI 3]: Cập nhật REWARD FUNCTION (Khuyến khích đi vào vùng sóng)
                 step_reward = 1.0
 
-                # Chỉ phạt di chuyển zig-zag gắt, bỏ phạt abs(action) để UAV dám bay chéo
                 step_reward -= abs(action - prev_action) * 0.05
 
-                # THƯỞNG NÓNG MỖI BƯỚC: Tính toán sóng thu được trên đoạn đường vừa đi
                 step_exposure = 0.0
                 for sensor in self.env.sensors:
                     step_exposure += sensor.exposure_on_segment(prev_point, next_point, step=1.0,
                                                                 obstacles=self.env.obstacles)
 
-                # Nhân hệ số để kích thích AI thèm ăn sóng
                 step_reward += (step_exposure * 2.0)
 
-                # Kiểm tra đâm vào viền bản đồ
                 if raw_next_y <= 0 or raw_next_y >= self.env.height:
                     crashed = True
 
-                # Kiểm tra va chạm với vật cản
                 for obs in self.env.obstacles:
                     if obs.intersects(prev_point, next_point):
                         crashed = True
@@ -331,13 +325,29 @@ class PPO:
                     actual_exposure = -objs[0]
                     actual_length = objs[1]
 
-                    # Terminal reward
                     terminal_reward = 50.0 + (actual_exposure * 1.5) - (actual_length * 0.05)
                     rewards[-1] += terminal_reward
             else:
                 objs = [float('inf'), float('inf')]
 
-            self.update_ppo(states, actions, log_probs, rewards)
+            returns = []
+            discounted_reward = 0
+            for r in reversed(rewards):
+                discounted_reward = r + self.gamma * discounted_reward
+                returns.insert(0, discounted_reward)
+
+            batch_states.extend(states)
+            batch_actions.extend(actions)
+            batch_log_probs.extend(log_probs)
+            batch_returns.extend(returns)
+
+            if episode % self.update_episodes == 0 or episode == self.max_episodes:
+                self.update_ppo(batch_states, batch_actions, batch_log_probs, batch_returns)
+
+                batch_states = []
+                batch_actions = []
+                batch_log_probs = []
+                batch_returns = []
 
             if verbose and episode % 100 == 0:
                 total_reward = sum(rewards)
