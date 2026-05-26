@@ -73,7 +73,7 @@ algorithm:
       clip_range: 0.3        # Tham số chặn của PPO
       ent_coef: 0.04         # Hệ số entropy để khuyến khích khám phá
       pop_size: 1            # Thường PPO chạy đơn lẻ hoặc song song, ở đây ta chạy đơn
-      n_generations: 1000     # Số tập (episodes) training
+      n_generations: 5000     # Số tập (episodes) training
 
 
   td3:
