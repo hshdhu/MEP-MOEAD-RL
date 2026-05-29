@@ -46,7 +46,7 @@ def main():
     
     print(f"\nEnvironment saved to: data/{folder_name}/{filename}")
     print(f"\nTo use this environment, run:")
-    print(f"   python run_ppo.py \"data/{folder_name}/{filename}\"")
+    print(f"   python run_rl.py \"data/{folder_name}/{filename}\" --algo")
 
 if __name__ == "__main__":
     main()

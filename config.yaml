@@ -35,63 +35,50 @@ obstacle:
 
 algorithm:
 
+  ppo:
+    n_generations: 1000      # Số tập (episodes) training - Đặt làm chuẩn
+    n_steps: 2048            # Số bước chạy trước khi cập nhật
+    batch_size: 64           # Kích thước batch để training
+    n_epochs: 12             # Số lần training lại trên cùng dữ liệu
+    lr: 0.0001               # Learning rate
+    gamma: 0.99              # Hệ số chiết khấu (Discount factor)
+    gae_lambda: 0.95         # Hệ số GAE để tính advantage
+    clip_range: 0.3          # Tham số chặn của PPO
+    ent_coef: 0.04           # Hệ số entropy để khuyến khích khám phá
+    action_scale: 8.0        # Giới hạn dịch chuyển Y
+    pop_size: 1              # Chạy đơn lẻ
+
+  td3:
+    n_generations: 1000      # Đồng bộ bằng đúng n_generations của PPO
+    batch_size: 128          # Cỡ batch lấy từ Replay Buffer (Off-policy thường dùng 128-256)
+    hidden_size: 256         # Số node ẩn trong mạng (Bằng với kiến trúc PPO)
+    lr: 0.0003               # Learning rate (Thường TD3/SAC xài 3e-4, PPO xài 1e-4)
+    gamma: 0.99              # Hệ số chiết khấu
+    tau: 0.005               # Hệ số cập nhật mềm cho Target Net
+
+    action_scale: 8.0        # Đồng bộ giới hạn dịch chuyển với PPO
+    exploration_noise: 0.1   # SỬA QUAN TRỌNG: Nhiễu 10% trên dải [-1, 1] của mạng Actor
+    policy_noise: 0.2        # Nhiễu thêm vào Target Policy (Chống overestimation)
+    noise_clip: 0.5          # Giới hạn cắt của policy_noise
+    policy_freq: 2           # Tần suất cập nhật mạng Actor (Đặc trưng TD3)
+    max_replay_buffer: 100000
+
   sac:
-    pop_size: 40
-    n_generations: 100
-    updates_per_ep: 10
-    batch_size: 128
+    n_generations: 1000      # Đồng bộ bằng đúng PPO và TD3
+    batch_size: 128          # Giống TD3
+    hidden_size: 256         # Bằng PPO/TD3
+    lr: 0.0003               # Bằng TD3
+    gamma: 0.99              # Hệ số chiết khấu
+    tau: 0.005               # Cập nhật mềm
 
-    hidden_size: 256
-    lr: 0.001
-
-    alpha_init: 1.0
-    tau: 0.005
-
-    action_scale: 15.0
-    w1: 0.9
-    w2: 0.1
-    window_size: 5
-
+    action_scale: 8.0        # Đồng bộ giới hạn dịch chuyển
+    max_replay_buffer: 100000
 
   moead:
     pop_size: 100
-    n_generations: 100
+    n_generations: 1000      # Nâng lên 1000 cho công bằng với RL (Tùy bạn chọn)
     neighborhood_size: 15
     crossover_prob: 0.9
     mutation_prob: 0.4
     eta_c: 10
     eta_m: 10
-
-
-  ppo:
-      n_steps: 2048          # Số bước chạy trước khi cập nhật
-      batch_size: 64         # Kích thước batch để training
-      n_epochs: 12          # Số lần training lại trên cùng dữ liệu
-      lr: 0.0001             # Learning rate
-      gamma: 0.99            # Hệ số chiết khấu (Discount factor)
-      gae_lambda: 0.95       # Hệ số GAE để tính advantage
-      clip_range: 0.3        # Tham số chặn của PPO
-      ent_coef: 0.04         # Hệ số entropy để khuyến khích khám phá
-      pop_size: 1            # Thường PPO chạy đơn lẻ hoặc song song, ở đây ta chạy đơn
-      n_generations: 5000     # Số tập (episodes) training
-
-
-  td3:
-      n_episodes: 1000          # Số lượng episodes (Nên để bằng n_generations của PPO)
-      batch_size: 256           # Cỡ batch lấy từ Replay Buffer (để 256 giúp hàm loss mượt hơn)
-      hidden_size: 256          # Số node ẩn trong mạng Actor/Critic
-      lr: 0.001                 # Learning rate (TD3 có thể học với lr lớn hơn PPO một chút)
-      gamma: 0.99               # Hệ số chiết khấu
-      tau: 0.005                # Hệ số cập nhật mềm cho Target Net
-
-      # TD3 Specific Parameters
-      action_scale: 15.0        # Giới hạn dịch chuyển trục Y (Max Action).
-      exploration_noise: 2.0    # Nhiễu Gaussian thêm vào action để tìm đường mới (giảm từ 5.0 xuống 2.0 để tránh bay loạn xạ)
-      policy_noise: 2.0         # Nhiễu thêm vào Target Policy Net để chống overestimation
-      noise_clip: 5.0           # Giới hạn cắt của policy_noise
-      policy_freq: 2            # Tần suất cập nhật mạng Actor (Đặc trưng của Delayed TD3)
-      max_replay_buffer: 100000 # Kích thước bộ nhớ lưu trữ kinh nghiệm
-
-      # Reward weights (Khớp với PPO: Exp * 1.5 - Len * 0.05)
-      w_exp: 1.5                # Trọng số cho Reward Exposure
-      w_len: 0.05               # Trọng số phạt cho Reward Length

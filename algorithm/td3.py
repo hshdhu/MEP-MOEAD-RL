@@ -4,24 +4,18 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import copy
-import math
 
 from general.point import Point
 from general.path import Path
-from shapely.geometry import Point as ShapelyPoint, LineString
+from shapely.geometry import Point as ShapelyPoint
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-# ==========================================
-# 1. REPLAY BUFFER
-# ==========================================
 class ReplayBuffer:
     def __init__(self, state_dim, action_dim, max_size=100000):
         self.max_size = max_size
         self.ptr = 0
         self.size = 0
-
         self.state = np.zeros((max_size, state_dim))
         self.action = np.zeros((max_size, action_dim))
         self.reward = np.zeros((max_size, 1))
@@ -34,7 +28,6 @@ class ReplayBuffer:
         self.reward[self.ptr] = reward
         self.next_state[self.ptr] = next_state
         self.done[self.ptr] = done
-
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
@@ -48,12 +41,8 @@ class ReplayBuffer:
             torch.FloatTensor(self.done[ind]).to(device)
         )
 
-
-# ==========================================
-# 2. ACTOR & CRITIC NETWORKS
-# ==========================================
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_size, max_action):
+    def __init__(self, state_dim, action_dim, hidden_size):
         super(Actor, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_size),
@@ -61,29 +50,23 @@ class Actor(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, action_dim),
-            nn.Tanh()
+            nn.Tanh() # Output trong khoảng [-1, 1]
         )
-        self.max_action = max_action
 
     def forward(self, state):
-        return self.max_action * self.net(state)
-
+        return self.net(state)
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_size):
         super(Critic, self).__init__()
         self.q1_net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.Linear(state_dim + action_dim, hidden_size), nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size), nn.ReLU(),
             nn.Linear(hidden_size, 1)
         )
         self.q2_net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.Linear(state_dim + action_dim, hidden_size), nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size), nn.ReLU(),
             nn.Linear(hidden_size, 1)
         )
 
@@ -95,37 +78,29 @@ class Critic(nn.Module):
         sa = torch.cat([state, action], 1)
         return self.q1_net(sa)
 
-
-# ==========================================
-# 3. TD3 AGENT
-# ==========================================
 class TD3:
     def __init__(self, env, **kwargs):
         self.env = env
         self.dx = 5
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # Kích thước state giống PPO (13: Base + Obs Radar + Sensor Radar)
         self.state_dim = 13
         self.action_dim = 1
+        self.action_scale = kwargs.get('action_scale', 8.0) # Chuẩn hoá giống PPO
 
-        self.max_episodes = kwargs.get('n_episodes', 500)
+        self.max_episodes = kwargs.get('n_episodes', kwargs.get('n_generations', 500))
         self.batch_size = kwargs.get('batch_size', 128)
         self.hidden_size = kwargs.get('hidden_size', 256)
-        self.lr = kwargs.get('lr', 0.0003)
+        self.lr = kwargs.get('lr', 3e-4)
         self.gamma = kwargs.get('gamma', 0.99)
         self.tau = kwargs.get('tau', 0.005)
 
-        # [SỬA ĐỔI 4]: Đồng bộ action_scale (max_action) bằng 8.0 giống như PPO
-        self.max_action = kwargs.get('action_scale', 8.0)
-        self.expl_noise = kwargs.get('exploration_noise', self.max_action * 0.2)  # Thêm nhiễu 20%
-        self.policy_noise = kwargs.get('policy_noise', self.max_action * 0.2)
-        self.noise_clip = kwargs.get('noise_clip', self.max_action * 0.5)
-
+        self.expl_noise = kwargs.get('exploration_noise', 0.2)
+        self.policy_noise = kwargs.get('policy_noise', 0.2)
+        self.noise_clip = kwargs.get('noise_clip', 0.5)
         self.policy_freq = kwargs.get('policy_freq', 2)
-        self.max_replay_buffer = kwargs.get('max_replay_buffer', 100000)
 
-        self.actor = Actor(self.state_dim, self.action_dim, self.hidden_size, self.max_action).to(device)
+        self.actor = Actor(self.state_dim, self.action_dim, self.hidden_size).to(device)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=self.lr)
 
@@ -133,14 +108,12 @@ class TD3:
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.lr)
 
-        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=self.max_replay_buffer)
-
+        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, kwargs.get('max_replay_buffer', 100000))
         self.total_it = 0
         self.EP = []
 
     def get_safe_start_y_in_range(self, low, high, x=0.0):
-        max_retries = 50
-        for _ in range(max_retries):
+        for _ in range(50):
             y = np.random.uniform(low, high)
             pt = ShapelyPoint(x, y)
             is_safe = True
@@ -148,19 +121,16 @@ class TD3:
                 if obs.polygon.contains(pt) or obs.polygon.distance(pt) < 10.0:
                     is_safe = False
                     break
-            if is_safe:
-                return y
+            if is_safe: return y
         return self.env.height / 2
 
     def get_state(self, x, y, prev_action):
         dist_top = (self.env.height - y) / self.env.height
         dist_bottom = y / self.env.height
-        norm_prev_action = prev_action / self.max_action
-
-        base_features = [x / self.env.width, y / self.env.height, norm_prev_action, dist_top, dist_bottom]
+        base_features = [x / self.env.width, y / self.env.height, prev_action, dist_top, dist_bottom]
 
         look_ahead = self.dx * 2.0
-        look_side = self.max_action * 2.0
+        look_side = self.action_scale * 2.0
 
         points_to_check = [
             ShapelyPoint(x + look_ahead, y),
@@ -179,50 +149,38 @@ class TD3:
                 else:
                     d = obs.polygon.distance(pt)
                     norm_d = min(d, 20.0) / 20.0
-                    if norm_d < obs_features[i]:
-                        obs_features[i] = norm_d
+                    if norm_d < obs_features[i]: obs_features[i] = norm_d
 
-        # SENSOR RADAR (Ngửi mùi sóng) giống hệt PPO
         sensor_points = [
             Point(x + look_ahead, y),
             Point(x + look_ahead, min(y + look_side, self.env.height)),
             Point(x + look_ahead, max(y - look_side, 0))
         ]
-
         sensor_features = [0.0, 0.0, 0.0]
         for i, pt in enumerate(sensor_points):
-            exp_val = 0.0
-            for sensor in self.env.sensors:
-                exp_val += sensor.exposure_at(pt, obstacles=self.env.obstacles)
+            exp_val = sum(sensor.exposure_at(pt, obstacles=self.env.obstacles) for sensor in self.env.sensors)
             sensor_features[i] = min(exp_val / 2.0, 1.0)
 
         return np.array(base_features + obs_features + sensor_features, dtype=np.float32)
 
     def select_action(self, state, add_noise=True):
         state = torch.FloatTensor(state.reshape(1, -1)).to(device)
-        with torch.no_grad():
-            action = self.actor(state).cpu().data.numpy().flatten()[0]
-
+        with torch.no_grad(): action = self.actor(state).cpu().data.numpy().flatten()[0]
         if add_noise:
             noise = np.random.normal(0, self.expl_noise)
-            action = np.clip(action + noise, -self.max_action, self.max_action)
-
+            action = np.clip(action + noise, -1.0, 1.0)
         return action
 
     def train(self):
-        if self.replay_buffer.size < self.batch_size:
-            return
-
+        if self.replay_buffer.size < self.batch_size: return
         self.total_it += 1
         state, action, reward, next_state, done = self.replay_buffer.sample(self.batch_size)
 
         with torch.no_grad():
             noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
-            next_action = (self.actor_target(next_state) + noise).clamp(-self.max_action, self.max_action)
-
+            next_action = (self.actor_target(next_state) + noise).clamp(-1.0, 1.0)
             target_Q1, target_Q2 = self.critic_target(next_state, next_action)
-            target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + (1 - done) * self.gamma * target_Q
+            target_Q = reward + (1 - done) * self.gamma * torch.min(target_Q1, target_Q2)
 
         current_Q1, current_Q2 = self.critic(state, action)
         critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
@@ -233,174 +191,101 @@ class TD3:
 
         if self.total_it % self.policy_freq == 0:
             actor_loss = -self.critic.Q1(state, self.actor(state)).mean()
-
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
 
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def evaluate_path(self, points):
         path = Path(points)
-        if not self.env.is_valid_path(path):
-            return float('inf'), float('inf')
-
-        exp = path.exposure(self.env.sensors, step=1.0, obstacles=self.env.obstacles)
-        length = path.length()
-        return -exp, length
+        if not self.env.is_valid_path(path): return float('inf'), float('inf')
+        return -path.exposure(self.env.sensors, step=1.0, obstacles=self.env.obstacles), path.length()
 
     def update_ep(self, points, objs):
-        if objs[0] == float('inf'):
-            return
-
+        if objs[0] == float('inf'): return
         new_ep = []
         is_dominated = False
-
         for sol_p, sol_o in self.EP:
             if sol_o[0] <= objs[0] and sol_o[1] <= objs[1]:
                 is_dominated = True
                 new_ep.append((sol_p, sol_o))
             elif not (objs[0] <= sol_o[0] and objs[1] <= sol_o[1]):
                 new_ep.append((sol_p, sol_o))
-
-        if not is_dominated:
-            new_ep.append((points, objs))
-
+        if not is_dominated: new_ep.append((points, objs))
         self.EP = new_ep
 
     def run(self, verbose=True, callback=None):
         for episode in range(1, self.max_episodes + 1):
             episode_transitions = []
-
-            # [SỬA ĐỔI 1]: Đồng bộ Lựa chọn cổng xuất phát giống hệt PPO
             sector = episode % 3
-            if sector == 0:
-                target_y = 0.8 * self.env.height
-            elif sector == 1:
-                target_y = 0.5 * self.env.height
-            else:
-                target_y = 0.2 * self.env.height
+            target_y = [0.8, 0.5, 0.2][sector] * self.env.height
+            state_y = self.get_safe_start_y_in_range(max(0, target_y - 5.0), min(self.env.height, target_y + 5.0), self.xs[0])
 
-            low = max(0, target_y - 5.0)
-            high = min(self.env.height, target_y + 5.0)
-            state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
-
-            prev_x = self.xs[0]
-            prev_action = 0.0
-
+            prev_x, prev_action = self.xs[0], 0.0
             current_points = [Point(prev_x, state_y)]
-            crashed = False
-            total_reward = 0
+            crashed, total_reward = False, 0
 
             for i, x in enumerate(self.xs[1:]):
                 state = self.get_state(prev_x, state_y, prev_action)
-
                 action = self.select_action(state, add_noise=True)
 
-                raw_next_y = state_y + action
+                raw_next_y = state_y + action * self.action_scale
                 next_y = np.clip(raw_next_y, 0, self.env.height)
 
-                prev_point = Point(prev_x, state_y)
-                next_point = Point(x, next_y)
-                next_shapely = ShapelyPoint(x, next_y)
+                prev_point, next_point, next_shapely = Point(prev_x, state_y), Point(x, next_y), ShapelyPoint(x, next_y)
 
-                # --- STEP REWARD ---
-                step_reward = 1.0
-
-                # [SỬA ĐỔI 3]: Chuẩn hóa công thức phạt bẻ lái gắt.
-                # PPO action nằm trong [-1, 1], còn TD3 action nằm trong [-8, 8].
-                # Phải chia cho max_action để lượng phạt tương đương nhau, tránh TD3 sợ không dám bẻ lái.
-                action_norm = action / self.max_action
-                prev_action_norm = prev_action / self.max_action
-                step_reward -= abs(action_norm - prev_action_norm) * 0.05
-
-                # THƯỞNG NÓNG MỖI BƯỚC: Thu được sóng là có điểm ngay!
-                step_exposure = 0.0
-                for sensor in self.env.sensors:
-                    step_exposure += sensor.exposure_on_segment(prev_point, next_point, step=1.0,
-                                                                obstacles=self.env.obstacles)
+                step_reward = 1.0 - abs(action - prev_action) * 0.05
+                step_exposure = sum(s.exposure_on_segment(prev_point, next_point, 1.0, self.env.obstacles) for s in self.env.sensors)
                 step_reward += (step_exposure * 2.0)
 
                 done = False
-
-                if raw_next_y <= 0 or raw_next_y >= self.env.height:
-                    crashed = True
-                    done = True
+                if raw_next_y <= 0 or raw_next_y >= self.env.height: crashed = done = True
 
                 for obs in self.env.obstacles:
                     if obs.intersects(prev_point, next_point):
-                        crashed = True
-                        done = True
-                        break
+                        crashed = done = True; break
                     else:
                         dist = obs.polygon.distance(next_shapely)
-                        if dist < 4.0:
-                            step_reward -= (4.0 - dist) * 0.5
+                        if dist < 4.0: step_reward -= (4.0 - dist) * 0.5
 
                 next_state = self.get_state(x, next_y, action)
 
                 if crashed:
-                    progress_ratio = x / self.env.width
-                    crash_penalty = -50.0 - (50.0 * progress_ratio)
-                    step_reward += crash_penalty
-
+                    step_reward += -50.0 - (50.0 * (x / self.env.width))
                     episode_transitions.append((state, action, step_reward, next_state, done))
                     current_points.append(next_point)
                     total_reward += step_reward
                     break
 
-                if i == len(self.xs[1:]) - 1:
-                    done = True
+                if i == len(self.xs[1:]) - 1: done = True
 
                 episode_transitions.append((state, action, step_reward, next_state, done))
                 total_reward += step_reward
 
-                state_y = next_y
-                prev_x = x
-                prev_action = action
+                state_y, prev_x, prev_action = next_y, x, action
                 current_points.append(next_point)
 
-            # --- TÍNH PHẦN THƯỞNG KẾT THÚC VÀ CẬP NHẬT TẬP PARETO ---
             if not crashed:
                 objs = self.evaluate_path(current_points)
                 self.update_ep(current_points, objs)
-
                 if objs[0] != float('inf'):
-                    actual_exposure = -objs[0]
-                    actual_length = objs[1]
-
-                    # [SỬA ĐỔI 2]: Đồng bộ hệ số thưởng kết thúc giống hệt PPO
-                    terminal_reward = 50.0 + (actual_exposure * 1.5) - (actual_length * 0.05)
+                    terminal_reward = 50.0 + (-objs[0] * 1.5) - (objs[1] * 0.05)
                     total_reward += terminal_reward
-
-                    # Cộng terminal_reward vào bước cuối cùng trong buffer tạm thời
                     s, a, r, ns, d = episode_transitions[-1]
                     episode_transitions[-1] = (s, a, r + terminal_reward, ns, d)
-            else:
-                objs = [float('inf'), float('inf')]
+            else: objs = [float('inf'), float('inf')]
 
-            # --- LƯU VÀO REPLAY BUFFER VÀ TRAIN TD3 ---
             for (s, a, r, ns, d) in episode_transitions:
                 self.replay_buffer.add(s, np.array([a]), r, ns, d)
                 self.train()
 
-            # --- LOGGING ---
             if verbose and episode % 100 == 0:
-                best_exp = -objs[0] if objs[0] != float('inf') else "Crash"
-                progress_pct = (prev_x / self.env.width) * 100
-                print(
-                    f"Gen {episode:3d}/{self.max_episodes} | "
-                    f"Total Rwd: {total_reward:6.1f} | "
-                    f"Progress: {progress_pct:5.1f}% | "
-                    f"Exp: {best_exp}"
-                )
+                print(f"Gen {episode:3d}/{self.max_episodes} | Total Rwd: {total_reward:6.1f} | Progress: {(prev_x / self.env.width) * 100:5.1f}% | Exp: {-objs[0] if objs[0] != float('inf') else 'Crash'}")
 
-            if callback:
-                callback(self, episode)
+            if callback: callback(self, episode)
 
-    def pareto_front(self):
-        return self.EP
+    def pareto_front(self): return self.EP

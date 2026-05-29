@@ -73,7 +73,7 @@ def plot_final_solutions(env, solutions, best_solution, save_path):
     if best_solution:
         path = np.array(best_solution['path'])
         ax.plot(path[:, 0], path[:, 1], color='#D32F2F', linewidth=3.0, label='Best Balance', zorder=10)
-        ax.set_title(f"MOEA/D Result\nExp={best_solution['exposure']:.2f}, Len={best_solution['length']:.2f}")
+        ax.set_title(f"Result\nExp={best_solution['exposure']:.2f}, Len={best_solution['length']:.2f}")
 
     plt.legend()
     plt.savefig(save_path, dpi=150)
