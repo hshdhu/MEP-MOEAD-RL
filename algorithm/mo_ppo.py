@@ -92,14 +92,26 @@ class PPO:
 
         self.EP: list = []
 
-    def _sample_weights(self, episode: int):
-        r = episode % 6
-        if r == 0: return 0.95, 0.05
-        if r == 1: return 0.05, 0.95
-        if r == 2: return 0.75, 0.25
-        if r == 3: return 0.25, 0.75
-        w = np.random.uniform(0.05, 0.95)
-        return float(w), float(1.0 - w)
+    def _sample_weights(self, episode: int) -> tuple[float, float]:
+        """
+        Tỷ lệ rơi vào điểm biên giảm dần:
+        - Lúc đầu: 20% (Khám phá nhanh giới hạn cực đại/cực tiểu)
+        - Lúc cuối: 5% (Chỉ để nhắc nhở mạng nơ-ron không bị quên)
+        - Còn lại: Random liên tục để lấp đầy Pareto Front.
+        """
+        # Tính xác suất chọn điểm biên (từ 0.2 giảm mượt về 0.05)
+        prob_boundary = max(0.05, 0.20 - 0.15 * (episode / self.max_episodes))
+
+        if np.random.rand() < prob_boundary:
+            # 50/50 chọn 1 trong 2 biên
+            if np.random.rand() < 0.5:
+                return 1.0, 0.0  # Ưu tiên Max Exposure tuyệt đối
+            else:
+                return 0.0, 1.0  # Ưu tiên Min Length tuyệt đối
+        else:
+            # Khám phá không gian giữa (Pareto Front)
+            w = np.random.uniform(0.0, 1.0)
+            return float(w), float(1.0 - w)
 
     def get_safe_start_y_in_range(self, low: float, high: float, x: float = 0.0) -> float:
         for _ in range(50):
@@ -225,7 +237,7 @@ class PPO:
                            self.MseLoss(v_len,  ret_len_norm) +
                            self.MseLoss(v_feas, ret_feas_norm))
 
-            loss = actor_loss + 0.5 * critic_loss - 0.01 * dist_entropy.mean()
+            loss = actor_loss + 0.5 * critic_loss - 0.015 * dist_entropy.mean()
 
             self.optimizer.zero_grad()
             loss.backward()

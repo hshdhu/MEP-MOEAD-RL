@@ -36,7 +36,7 @@ obstacle:
 algorithm:
 
   ppo:
-    n_generations: 2000      # Số tập (episodes) training - Đặt làm chuẩn
+    n_generations: 3000      # Số tập (episodes) training - Đặt làm chuẩn
     n_steps: 2048            # Số bước chạy trước khi cập nhật
     batch_size: 64           # Kích thước batch để training
     n_epochs: 12             # Số lần training lại trên cùng dữ liệu
