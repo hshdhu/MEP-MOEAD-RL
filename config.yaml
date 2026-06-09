@@ -1,9 +1,9 @@
 # Environment Settings
 environment:
-  width: 200
-  height: 200
-  num_sensors: 50
-  num_obstacles: 5
+  width: 400
+  height: 400
+  num_sensors: 200
+  num_obstacles: 8
   coverage_ratio: 0.2
 
 # Path Representation
@@ -36,7 +36,7 @@ obstacle:
 algorithm:
 
   ppo:
-    n_generations: 1000      # Số tập (episodes) training - Đặt làm chuẩn
+    n_generations: 2000      # Số tập (episodes) training - Đặt làm chuẩn
     n_steps: 2048            # Số bước chạy trước khi cập nhật
     batch_size: 64           # Kích thước batch để training
     n_epochs: 12             # Số lần training lại trên cùng dữ liệu
@@ -49,7 +49,7 @@ algorithm:
     pop_size: 1              # Chạy đơn lẻ
 
   td3:
-    n_generations: 1000      # Đồng bộ bằng đúng n_generations của PPO
+    n_generations: 2000      # Đồng bộ bằng đúng n_generations của PPO
     batch_size: 128          # Cỡ batch lấy từ Replay Buffer (Off-policy thường dùng 128-256)
     hidden_size: 256         # Số node ẩn trong mạng (Bằng với kiến trúc PPO)
     lr: 0.0003               # Learning rate (Thường TD3/SAC xài 3e-4, PPO xài 1e-4)
@@ -64,7 +64,7 @@ algorithm:
     max_replay_buffer: 100000
 
   sac:
-    n_generations: 1000      # Đồng bộ bằng đúng PPO và TD3
+    n_generations: 2000      # Đồng bộ bằng đúng PPO và TD3
     batch_size: 128          # Giống TD3
     hidden_size: 256         # Bằng PPO/TD3
     lr: 0.0003               # Bằng TD3

@@ -245,8 +245,8 @@ class PPO:
             # Smooth Decay: w_feas giảm từ 1.0 -> 0.2 trên toàn bộ quá trình training
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
-            sector   = episode % 3
-            target_y = [0.8, 0.5, 0.2][sector] * self.env.height
+            sector   = episode % 5
+            target_y = [0.9, 0.7, 0.5, 0.3, 0.1][sector] * self.env.height
             low      = max(0.0, target_y - 5.0)
             high     = min(self.env.height, target_y + 5.0)
             state_y  = self.get_safe_start_y_in_range(low, high, self.xs[0])
