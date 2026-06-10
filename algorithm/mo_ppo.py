@@ -63,7 +63,7 @@ class ActorCritic(nn.Module):
 # 2. MO-PPO ALGORITHM
 # ══════════════════════════════════════════════════════════════════════════════
 
-class PPO:
+class MO_PPO:
     def __init__(self, env, **kwargs):
         self.env = env
         self.dx  = 5
