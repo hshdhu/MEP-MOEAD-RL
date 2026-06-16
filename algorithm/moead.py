@@ -29,6 +29,10 @@ class MOEAD:
         self.gene_length = len(self.xs)
         self.pop_size = pop_size
         self.n_generations = n_generations
+
+        # Alias giúp run_mo_rl.py nhận diện để tính toán mốc chụp ảnh
+        self.max_episodes = n_generations
+
         self.T = min(neighborhood_size, pop_size)
         self.pc = crossover_prob
         self.pm = mutation_prob if mutation_prob is not None else 1.0 / self.gene_length
@@ -46,14 +50,8 @@ class MOEAD:
         self.ideal_point = None
         self.nadir_point = None
 
-        # External Population (EP)
+        # External Population (EP) - Nơi lưu Pareto Front
         self.EP = []
-
-        # History tracking
-        self.hypervolume_history = []
-        self.pareto_size_history = []
-        self.pareto_front_history = []
-        self.hv_ref_point = (1.0, self.length_max)
 
     def generate_lambdas(self) -> np.ndarray:
         lambdas = np.zeros((self.pop_size, 2))
@@ -174,8 +172,6 @@ class MOEAD:
 
     def repair_path(self, ys, max_tries_per_point=30):
         ys_copy = ys.copy()
-
-
         safe_min = 0.0
         safe_max = self.env.height
 
@@ -236,7 +232,7 @@ class MOEAD:
                     break
 
             if not created:
-                # Fallback: try using generate random path to get a valid path, then convert to y-list
+                # Fallback: generate random path
                 rand_path = generate_random_path(
                     self.env.width,
                     self.env.height,
@@ -246,7 +242,6 @@ class MOEAD:
                 if rand_path is not None and len(rand_path.points) == len(self.xs):
                     pop_ylists.append(path_to_ylist(rand_path))
                 else:
-                    # Final fallback: random y-list across full height
                     random_ylist = [random.uniform(0, self.env.height) for _ in self.xs]
                     pop_ylists.append(random_ylist)
 
@@ -264,30 +259,9 @@ class MOEAD:
             self.update_external_population(y, obj)
         print(f"[MOEAD] Valid initial solutions: {valid_cnt}/{self.pop_size}")
 
-    def calculate_hypervolume(self, front, ref):
-        if not front: return 0.0
-        ref_f1, ref_f2 = ref
-        valid = [o for o in front if o[0] <= ref_f1 and o[1] <= ref_f2]
-        if not valid: return 0.0
-        valid.sort(key=lambda x: x[0], reverse=True)
-        hv = 0.0
-        prev_f1 = ref_f1
-        for f1, f2 in valid:
-            width = prev_f1 - f1
-            height = ref_f2 - f2
-            if width > 0 and height > 0: hv += width * height
-            prev_f1 = f1
-        return hv
-
     def run(self, verbose=True, callback=None):
         if not self.population:
             self.initialize_population()
-
-        current_front = [o for y, o in self.EP]
-        hv = self.calculate_hypervolume(current_front, self.hv_ref_point)
-        self.hypervolume_history = [hv]
-        self.pareto_size_history = [len(self.EP)]
-        self.pareto_front_history = [current_front]
 
         for gen in range(1, self.n_generations + 1):
             for i in range(self.pop_size):
@@ -316,17 +290,13 @@ class MOEAD:
                         self.population[j] = c1_repaired
                         self.objectives[j] = c_obj
 
+            # Gọi callback để run_mo_rl.py thu thập metric và vẽ hình
             if callback:
                 callback(self, gen)
 
-            curr_front = [o for y, o in self.EP]
-            hv = self.calculate_hypervolume(curr_front, self.hv_ref_point)
-            self.hypervolume_history.append(hv)
-            self.pareto_size_history.append(len(self.EP))
-            self.pareto_front_history.append(curr_front)
-
             if verbose and gen % 10 == 0:
-                print(f"Gen {gen} | EP Size: {len(self.EP)} | HV: {hv:.4f}")
+                print(f"Gen {gen:3d}/{self.n_generations} | EP Size: {len(self.EP)}")
 
     def pareto_front(self):
-        return [(ylist_to_path(self.xs, y), o) for y, o in self.EP]
+        # Chuyển đổi về list of Point để tương thích định dạng với thuật toán RL
+        return [(ylist_to_path(self.xs, y).points, o) for y, o in self.EP]
