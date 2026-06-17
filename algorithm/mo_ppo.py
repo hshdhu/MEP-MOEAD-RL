@@ -79,6 +79,13 @@ class MO_PPO:
         self.MseLoss = nn.MSELoss()
         self.EP: list = []
 
+        self.current_actor_loss = 0.0
+        self.current_critic_loss = 0.0
+        self.current_reward_exp = 0.0
+        self.current_reward_len = 0.0
+        self.current_reward_feas = 0.0
+        self.current_value = 0.0
+
     def _sample_weights(self) -> tuple[float, float]:
         """Sample weights once per batch"""
         if np.random.rand() < 0.15:
@@ -199,10 +206,15 @@ class MO_PPO:
         with torch.no_grad():
             _, old_v_exp, old_v_len, old_v_feas, _ = self.policy_old.evaluate(old_states, old_actions)
             old_v_scalar = w_exp_t * old_v_exp + w_len_t * old_v_len + w_feas_t * old_v_feas
+            self.current_value = old_v_scalar.mean().item()
 
         advantages = scal_returns - old_v_scalar
         if advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        actor_loss = torch.tensor(0.0)
+        critic_loss = torch.tensor(0.0)
+
 
         for _ in range(self.K_epochs):
             logprobs_new, v_exp, v_len, v_feas, dist_entropy = self.policy.evaluate(old_states, old_actions)
@@ -227,6 +239,9 @@ class MO_PPO:
             with torch.no_grad():
                 self.policy.log_std.data.clamp_(min=-2.0, max=0.0)
 
+        self.current_actor_loss = actor_loss.item()
+        self.current_critic_loss = critic_loss.item()
+
         self.policy_old.load_state_dict(self.policy.state_dict())
 
     def run(self, verbose: bool = True, callback=None):
@@ -242,8 +257,8 @@ class MO_PPO:
             # Start position
             sector = episode % 5
             target_y = [0.9, 0.7, 0.5, 0.3, 0.1][sector] * self.env.height
-            low = max(0.0, target_y - 5.0)
-            high = min(self.env.height, target_y + 5.0)
+            low = max(0.0, target_y - 15.0)
+            high = min(self.env.height, target_y + 15.0)
             state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
 
             states, actions, log_probs = [], [], []
@@ -313,6 +328,10 @@ class MO_PPO:
                     rewards_feas[-1] += 50.0
             else:
                 objs = (float('inf'), float('inf'))
+
+            self.current_reward_exp = sum(rewards_exp)
+            self.current_reward_len = sum(rewards_len)
+            self.current_reward_feas = sum(rewards_feas)
 
             # Discount & store
             ret_exp = self._discount(rewards_exp, self.gamma)

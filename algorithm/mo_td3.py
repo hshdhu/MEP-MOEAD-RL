@@ -158,7 +158,14 @@ class MO_TD3:
         self.total_it = 0
         self.EP = []
 
-    # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
+        self.current_actor_loss = 0.0
+        self.current_critic_loss = 0.0
+        self.current_reward_exp = 0.0
+        self.current_reward_len = 0.0
+        self.current_reward_feas = 0.0
+        self.current_value = 0.0
+
+        # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
     def _sample_weights(self) -> tuple[float, float]:
         if np.random.rand() < 0.15:
             return (1.0, 0.0) if np.random.rand() < 0.5 else (0.0, 1.0)
@@ -256,6 +263,8 @@ class MO_TD3:
         critic_loss.backward()
         self.critic_optimizer.step()
 
+        self.current_critic_loss = critic_loss.item()
+
         # Update Actor trễ (Delayed Update)
         if self.total_it % self.policy_freq == 0:
             actor_action = self.actor(state)
@@ -264,11 +273,15 @@ class MO_TD3:
             # Scalarization ngay tại hàm Loss của Actor (dựa vào weights của môi trường)
             q_scalar = w_exp * q1_exp_a + w_len * q1_len_a + w_feas * q1_feas_a
 
+            self.current_value = q_scalar.mean().item()
+
             actor_loss = -q_scalar.mean()
 
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
+
+            self.current_actor_loss = actor_loss.item()
 
             # Soft update mạng target
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
@@ -300,8 +313,8 @@ class MO_TD3:
 
             sector = episode % 5
             target_y = [0.9, 0.7, 0.5, 0.3, 0.1][sector] * self.env.height
-            low = max(0.0, target_y - 5.0)
-            high = min(self.env.height, target_y + 5.0)
+            low = max(0.0, target_y - 15.0)
+            high = min(self.env.height, target_y + 15.0)
             state_y = self.get_safe_start_y_in_range(low, high, self.xs[0])
 
             prev_x, prev_action = self.xs[0], 0.0
@@ -379,6 +392,11 @@ class MO_TD3:
                     episode_transitions[-1] = (s, a, new_r_e, new_r_l, new_r_f, ns, d)
             else:
                 objs = (float('inf'), float('inf'))
+
+            if len(episode_transitions) > 0:
+                self.current_reward_exp = sum([t[2] for t in episode_transitions])
+                self.current_reward_len = sum([t[3] for t in episode_transitions])
+                self.current_reward_feas = sum([t[4] for t in episode_transitions])
 
             # Đưa Data vào Replay Buffer & Train mạng
             for (s, a, r_e, r_l, r_f, ns, d) in episode_transitions:

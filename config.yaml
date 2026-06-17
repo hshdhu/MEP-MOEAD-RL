@@ -35,7 +35,7 @@ obstacle:
 
 algorithm:
 
-  ppo:
+  mo_ppo:
     n_generations: 3000
     hidden_size: 256
     timesteps_per_batch: 2048            # Số bước chạy trước khi cập nhật
@@ -49,7 +49,7 @@ algorithm:
     action_scale: 8.0        # Giới hạn dịch chuyển Y
     pop_size: 1              # Chạy đơn lẻ
 
-  td3:
+  mo_td3:
     n_generations: 3000      # Đồng bộ bằng đúng n_generations của PPO
     batch_size: 256          # Cỡ batch lấy từ Replay Buffer (Off-policy thường dùng 128-256)
     hidden_size: 256         # Số node ẩn trong mạng (Bằng với kiến trúc PPO)
@@ -64,7 +64,7 @@ algorithm:
     policy_freq: 2           # Tần suất cập nhật mạng Actor (Đặc trưng TD3)
     max_replay_buffer: 100000
 
-  sac:
+  mo_sac:
     n_generations: 3000
     batch_size: 256
     hidden_size: 256
@@ -78,7 +78,7 @@ algorithm:
   moead:
     pop_size: 50
     n_generations: 60
-    neighborhood_size: 5
+    neighborhood_size: 15
     crossover_prob: 0.9
     mutation_prob: 0.4
     eta_c: 20

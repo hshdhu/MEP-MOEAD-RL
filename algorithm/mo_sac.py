@@ -161,6 +161,13 @@ class MO_SAC:
         self.replay_buffer = MOReplayBuffer(self.state_dim, self.action_dim)
         self.EP = []
 
+        self.current_actor_loss = 0.0
+        self.current_critic_loss = 0.0
+        self.current_reward_exp = 0.0
+        self.current_reward_len = 0.0
+        self.current_reward_feas = 0.0
+        self.current_value = 0.0
+
     @property
     def alpha(self):
         return self.log_alpha.exp()
@@ -259,6 +266,8 @@ class MO_SAC:
         q1_scalar = w_exp * q1_e_p + w_len * q1_l_p + w_feas * q1_f_p
         q2_scalar = w_exp * q2_e_p + w_len * q2_l_p + w_feas * q2_f_p
 
+        self.current_value = q1_scalar.mean().item()
+
         # Tối ưu hóa điểm nhỏ nhất (Twin SAC logic) + Maximize Entropy
         actor_loss = (self.alpha * lp - torch.min(q1_scalar, q2_scalar)).mean()
 
@@ -275,6 +284,9 @@ class MO_SAC:
         # Soft Update Critic Target
         for p, tp in zip(self.critic.parameters(), self.critic_target.parameters()):
             tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
+
+        self.current_actor_loss = actor_loss.item()
+        self.current_critic_loss = critic_loss.item()
 
     @staticmethod
     def _dominates(a, b):
@@ -300,7 +312,7 @@ class MO_SAC:
 
             sector = episode % 5
             target_y = [0.9, 0.7, 0.5, 0.3, 0.1][sector] * self.env.height
-            state_y = self.get_safe_start_y_in_range(max(0, target_y - 5.0), min(self.env.height, target_y + 5.0),
+            state_y = self.get_safe_start_y_in_range(max(0, target_y - 15.0), min(self.env.height, target_y + 15.0),
                                                      self.xs[0])
 
             prev_x, prev_action = self.xs[0], 0.0
@@ -371,6 +383,11 @@ class MO_SAC:
                     episode_transitions[-1] = (s, a, new_r_e, new_r_l, new_r_f, ns, d)
             else:
                 objs = [float('inf'), float('inf')]
+
+            if len(episode_transitions) > 0:
+                self.current_reward_exp = sum([t[2] for t in episode_transitions])
+                self.current_reward_len = sum([t[3] for t in episode_transitions])
+                self.current_reward_feas = sum([t[4] for t in episode_transitions])
 
             for (s, a, r_e, r_l, r_f, ns, d) in episode_transitions:
                 self.replay_buffer.add(s, np.array([a]), r_e, r_l, r_f, ns, d)

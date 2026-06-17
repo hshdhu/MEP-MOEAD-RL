@@ -6,23 +6,38 @@ from general.point import Point
 from general.path import Path
 from utils.generator import generate_random_path
 
-
 # --- Helper functions ---
 def path_to_ylist(path: Path) -> List[float]:
     return [p.y for p in path.points]
-
 
 def ylist_to_path(xs: List[float], ys: List[float]) -> Path:
     pts = [Point(x, y) for x, y in zip(xs, ys)]
     return Path(pts)
 
+def reflect_clip(v, lo: float, hi: float):
+    """
+    Reflective boundary handling instead of hard clipping.
+    Works for both scalars and numpy arrays.
+
+    Hard np.clip() biases values that overshoot the boundary toward
+    sitting exactly AT the boundary (0 or height), which artificially
+    inflates the number of solutions that hug the map edges.
+    Reflecting the overshoot back into the valid range removes that bias.
+    """
+    span = hi - lo
+    if span <= 0:
+        return np.full_like(np.asarray(v, dtype=float), lo) if hasattr(v, '__len__') else lo
+    arr = np.asarray(v, dtype=float)
+    folded = np.mod(arr - lo, 2 * span)
+    reflected = np.where(folded > span, 2 * span - folded, folded)
+    result = lo + reflected
+    return float(result) if np.ndim(v) == 0 else result
 
 # --- Class MOEAD ---
 class MOEAD:
     def __init__(self, env, dx=10, pop_size=50, n_generations=100,
                  neighborhood_size=10, crossover_prob=0.9, mutation_prob=None,
                  eta_c=20, eta_m=20, step_exposure=1.0, repair_attempts=50, length_max=500.0):
-
         self.env = env
         self.dx = dx
         self.xs = list(np.arange(0, env.width + 1, dx))
@@ -142,8 +157,10 @@ class MOEAD:
                 beta = (2 * u) ** (1 / (self.eta_c + 1)) if u <= 0.5 else (1 / (2 * (1 - u))) ** (1 / (self.eta_c + 1))
                 c1[i] = 0.5 * ((1 + beta) * y1[i] + (1 - beta) * y2[i])
                 c2[i] = 0.5 * ((1 - beta) * y1[i] + (1 + beta) * y2[i])
-        c1 = [min(max(0.0, v), self.env.height) for v in c1]
-        c2 = [min(max(0.0, v), self.env.height) for v in c2]
+        # Reflective boundary instead of hard clip: avoids artificially
+        # piling up solutions exactly at y=0 / y=height.
+        c1 = [reflect_clip(v, 0.0, self.env.height) for v in c1]
+        c2 = [reflect_clip(v, 0.0, self.env.height) for v in c2]
         return c1, c2
 
     def mutate(self, ys):
@@ -152,9 +169,9 @@ class MOEAD:
 
         # Single-point mutation
         for i in range(gene_len):
-            if random.random() <= (1.0 / gene_len):
+            if random.random() <= self.pm:
                 delta = random.uniform(-10, 10)
-                new_ys[i] = np.clip(new_ys[i] + delta, 0, self.env.height)
+                new_ys[i] = reflect_clip(new_ys[i] + delta, 0, self.env.height)
 
         # Block mutation
         if random.random() < 0.3:
@@ -167,7 +184,7 @@ class MOEAD:
             for k in range(block_size):
                 idx = start_idx + k
                 new_ys[idx] += shift * weights[k]
-                new_ys[idx] = np.clip(new_ys[idx], 0, self.env.height)
+                new_ys[idx] = reflect_clip(new_ys[idx], 0, self.env.height)
         return new_ys
 
     def repair_path(self, ys, max_tries_per_point=30):
@@ -175,18 +192,27 @@ class MOEAD:
         safe_min = 0.0
         safe_max = self.env.height
 
+        # Removed `self.env.height` from the radius ladder: trying an
+        # offset as large as the whole map height almost always gets
+        # clipped straight to 0 or height, which is what was causing
+        # solutions to pile up on the boundary after repair. Capping
+        # the largest search radius keeps repairs local instead of
+        # dragging points to the map edge.
+        max_local_radius = min(self.env.height * 0.3, 80)
+        search_radii = [r for r in [2, 5, 10, 20, 40, 80] if r <= max_local_radius]
+        if not search_radii:
+            search_radii = [max_local_radius]
+
         for i, (x, y) in enumerate(zip(self.xs, ys_copy)):
             is_in_obstacle = not self.env.is_valid_point(Point(x, y))
 
             if is_in_obstacle:
                 found = False
-                search_radii = [2, 5, 10, 20, 40, 80, self.env.height]
 
                 for r in search_radii:
-                    limit_tries = 10 if r < self.env.height else max_tries_per_point
-                    for _ in range(limit_tries):
+                    for _ in range(max_tries_per_point):
                         offset = random.uniform(-r, r)
-                        ny = np.clip(y + offset, safe_min, safe_max)
+                        ny = reflect_clip(y + offset, safe_min, safe_max)
                         if self.env.is_valid_point(Point(x, ny)):
                             ys_copy[i] = ny
                             found = True
@@ -194,7 +220,17 @@ class MOEAD:
                     if found: break
 
                 if not found:
-                    ys_copy[i] = random.uniform(safe_min, safe_max)
+                    # Unbiased fallback: sample uniformly across the
+                    # whole valid range instead of an offset+clip that
+                    # would skew toward the edges.
+                    for _ in range(max_tries_per_point):
+                        ny = random.uniform(safe_min, safe_max)
+                        if self.env.is_valid_point(Point(x, ny)):
+                            ys_copy[i] = ny
+                            found = True
+                            break
+                    if not found:
+                        ys_copy[i] = random.uniform(safe_min, safe_max)
 
         final_path = ylist_to_path(self.xs, ys_copy)
         if self.env.is_valid_path(final_path):
@@ -205,7 +241,11 @@ class MOEAD:
         print(f"[MOEAD] Initializing population...")
         pop_ylists = []
 
-        strata_centers = np.linspace(0, self.env.height, self.pop_size)
+        sectors = [0.9, 0.7, 0.5, 0.3, 0.1]
+        strata_centers = []
+        for i in range(self.pop_size):
+            target_y = sectors[i % 5] * self.env.height
+            strata_centers.append(target_y)
         random.shuffle(strata_centers)
 
         for i in range(self.pop_size):
@@ -214,12 +254,12 @@ class MOEAD:
 
             for _ in range(50):
                 # Linear Noise Strategy
-                y1 = np.clip(target_y + random.uniform(-15, 15), 0, self.env.height)
-                y2 = np.clip(target_y + random.uniform(-40, 40), 0, self.env.height)
+                y1 = reflect_clip(target_y + random.uniform(-15.0, 15.0), 0, self.env.height)
+                y2 = reflect_clip(target_y + random.uniform(-40, 40), 0, self.env.height)
 
                 base = np.linspace(y1, y2, len(self.xs))
                 noise = np.random.normal(0, 5, len(self.xs))
-                candidate = np.clip(base + noise, 0, self.env.height).tolist()
+                candidate = reflect_clip(base + noise, 0, self.env.height).tolist()
 
                 repaired = self.repair_path(candidate, max_tries_per_point=20)
                 if repaired:
