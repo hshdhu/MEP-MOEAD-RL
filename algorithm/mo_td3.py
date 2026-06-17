@@ -125,11 +125,14 @@ class MO_TD3:
         self.dx = 5
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # State dim tăng lên 16 giống MO-PPO (13 features + 3 weights)
+        # Giữ nguyên 16 để tránh State Aliasing cho TD3
         self.base_state_dim = 13
         self.state_dim = 16
         self.action_dim = 1
         self.action_scale = kwargs.get('action_scale', 8.0)
+
+        # [CẢI TIẾN 1]: Thêm biến này phục vụ cho Terminal Reward
+        self.max_expected_length = np.hypot(env.width, env.height)
 
         self.max_episodes = kwargs.get('n_episodes', kwargs.get('n_generations', 1500))
         self.batch_size = kwargs.get('batch_size', 256)
@@ -155,17 +158,12 @@ class MO_TD3:
         self.total_it = 0
         self.EP = []
 
-    def _sample_weights(self, episode: int) -> tuple[float, float]:
-        """Giữ nguyên logic của MO-PPO: Boundary exploration kết hợp Front-filling"""
-        prob_boundary = max(0.05, 0.20 - 0.15 * (episode / self.max_episodes))
-        if np.random.rand() < prob_boundary:
-            if np.random.rand() < 0.5:
-                return 1.0, 0.0
-            else:
-                return 0.0, 1.0
-        else:
-            w = np.random.uniform(0.0, 1.0)
-            return float(w), float(1.0 - w)
+    # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
+    def _sample_weights(self) -> tuple[float, float]:
+        if np.random.rand() < 0.15:
+            return (1.0, 0.0) if np.random.rand() < 0.5 else (0.0, 1.0)
+        w = np.random.uniform(0.0, 1.0)
+        return float(w), float(1.0 - w)
 
     def get_safe_start_y_in_range(self, low, high, x=0.0):
         for _ in range(50):
@@ -296,8 +294,8 @@ class MO_TD3:
     def run(self, verbose=True, callback=None):
         for episode in range(1, self.max_episodes + 1):
 
-            # Khởi tạo weights giống MO-PPO
-            w_exp, w_len = self._sample_weights(episode)
+            # Sử dụng logic sample weights đã cải tiến
+            w_exp, w_len = self._sample_weights()
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
             sector = episode % 5
@@ -314,7 +312,7 @@ class MO_TD3:
             for i, x in enumerate(self.xs[1:]):
                 base_state = self.get_base_state(prev_x, state_y, prev_action)
 
-                # Nối trọng số vào state
+                # Nối đủ 3 trọng số vào state
                 state = np.append(base_state, [w_exp, w_len, w_feas]).astype(np.float32)
 
                 action = self.select_action(state, add_noise=True)
@@ -325,7 +323,7 @@ class MO_TD3:
                 prev_point, next_point = Point(prev_x, state_y), Point(x, next_y)
                 next_shapely = ShapelyPoint(x, next_y)
 
-                # Thu thập 3 mảng Reward y hệt MO-PPO
+                # Thu thập 3 mảng Reward
                 r_exp = sum(s.exposure_on_segment(prev_point, next_point, 1.0, self.env.obstacles) for s in
                             self.env.sensors) * 2.0
                 r_len = -0.05 - abs(action - prev_action) * 0.05
@@ -350,7 +348,7 @@ class MO_TD3:
                     progress_ratio = x / self.env.width
                     crash_penalty = -50.0 - (50.0 * progress_ratio)
 
-                    # Reward r_feas bị gánh penalty khi đụng vật cản (giống MO-PPO)
+                    # Reward r_feas bị gánh penalty
                     episode_transitions.append((state, action, r_exp, r_len, r_feas + crash_penalty, next_state, done))
                     current_pts.append(next_point)
                     break
@@ -362,7 +360,7 @@ class MO_TD3:
                 state_y, prev_x, prev_action = next_y, x, action
                 current_pts.append(next_point)
 
-            # Đánh giá cuối đường đi & Add Terminal Bonus
+            # [CẢI TIẾN 3]: Đánh giá cuối đường đi & Add Terminal Bonus giống hệt MO-PPO
             if not crashed:
                 objs = self.evaluate_path(current_pts)
                 self.update_ep(current_pts, objs)
@@ -370,8 +368,15 @@ class MO_TD3:
                 if objs[0] != float('inf') and len(episode_transitions) > 0:
                     s, a, r_e, r_l, r_f, ns, d = episode_transitions[-1]
 
-                    # Cộng điểm thưởng đích đến giống MO-PPO
-                    episode_transitions[-1] = (s, a, r_e + 10.0, r_l + 5.0, r_f + 50.0, ns, d)
+                    actual_exp = -objs[0]
+                    actual_len = objs[1]
+
+                    new_r_e = r_e + (actual_exp * 0.5)
+                    new_r_l = r_l + (max(0.0, self.max_expected_length - actual_len) * 0.5)
+                    new_r_f = r_f + 50.0
+
+                    # Gán lại giá trị reward điểm cuối
+                    episode_transitions[-1] = (s, a, new_r_e, new_r_l, new_r_f, ns, d)
             else:
                 objs = (float('inf'), float('inf'))
 
