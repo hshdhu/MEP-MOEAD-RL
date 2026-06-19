@@ -31,74 +31,78 @@ def set_global_seeds(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return super().default(obj)
+
+
 def save_json(data, file_path):
     with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+        json.dump(data, f, indent=4, ensure_ascii=False, cls=NumpyEncoder)
 
 
 def plot_initial_environment(env, save_path):
-    # Thiết lập kích thước hệ trục đồng nhất (ví dụ 10x10 hoặc 8x8 tùy bạn chọn)
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.set_xlim(0, env.width)
     ax.set_ylim(0, env.height)
     ax.set_aspect('equal')
-
-    # 1. Vẽ các vùng cảm biến (Lớp dưới cùng: zorder=1, 2)
     for s in env.sensors:
-        ax.add_patch(
-            plt.Circle(
-                (s.position.x, s.position.y),
-                s.radius,
-                facecolor=(0.4, 0.7, 1.0, 0.25),  # Màu xanh lam nhạt đồng nhất
-                edgecolor=(0.4, 0.7, 1.0, 0.4),
-                linewidth=0.7,
-                zorder=1
-            )
-        )
-        # Vẽ tâm cảm biến dạng chấm tròn nhỏ thay vì chữ X đỏ
-        ax.plot(s.position.x, s.position.y, 'o',
-                color=(0.4, 0.7, 1.0, 0.7),
-                markersize=3,
-                zorder=2)
-
-    # 2. Vẽ các vật cản (Lớp trên: zorder=10)
+        ax.add_patch(plt.Circle((s.position.x, s.position.y), s.radius,
+                                facecolor=(0.4, 0.7, 1.0, 0.25), edgecolor=(0.4, 0.7, 1.0, 0.4), linewidth=0.7,
+                                zorder=1))
+        ax.plot(s.position.x, s.position.y, 'o', color=(0.4, 0.7, 1.0, 0.7), markersize=3, zorder=2)
     for obs in env.obstacles:
-        # Nếu obs.polygon tồn tại (Shapely object), lấy tọa độ exterior
         if hasattr(obs, 'polygon'):
             x, y = obs.polygon.exterior.xy
-        # Ngược lại, nếu dùng hàm to_tuples() như hàm plot_environment gốc của bạn
         elif hasattr(obs, 'to_tuples'):
             x, y = zip(*obs.to_tuples())
         else:
             x, y = obs.exterior.xy
-
         ax.fill(x, y, color='gray', alpha=0.5, label='Obstacle', zorder=10)
-
     plt.title("Initial Environment Configuration", fontsize=14, fontweight='bold')
     plt.xlabel('X coordinate')
     plt.ylabel('Y coordinate')
     plt.grid(True, linestyle='--', alpha=0.3)
-
-    # Khử trùng lặp nhãn Obstacle trong Legend nếu cần
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    if by_label:
-        ax.legend(by_label.values(), by_label.keys(), loc='upper right')
-
+    if by_label: ax.legend(by_label.values(), by_label.keys(), loc='upper right')
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
+
+# [CẢI TIẾN]: Sử dụng SEM thay vì STD, giảm alpha, tăng zorder
 def plot_mean_std(ax, x, data, label, color):
     data_np = np.array(data, dtype=np.float64)
     mean = np.nanmean(data_np, axis=0)
-    std = np.nanstd(data_np, axis=0)
-    ax.plot(x, mean, label=label, color=color, linewidth=2)
-    ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.2)
+    # Tính SEM (Standard Error of the Mean) giúp dải mờ hẹp và chính xác hơn
+    sem = np.nanstd(data_np, axis=0) / np.sqrt(data_np.shape[0])
+
+    ax.plot(x, mean, label=label, color=color, linewidth=2.5, zorder=5)  # Nổi lên trên
+    ax.fill_between(x, mean - sem, mean + sem, color=color, alpha=0.15, zorder=1)  # Nhạt bớt
+
+
+# [CẢI TIẾN]: Hàm làm mượt EMA dùng riêng cho biểu đồ Reward/Loss
+def ema(data, alpha=0.05):
+    data_np = np.array(data, dtype=np.float64)
+    if len(data_np) == 0: return data_np
+    out = np.zeros_like(data_np)
+    out[0] = data_np[0]
+    for i in range(1, len(data_np)):
+        if math.isnan(data_np[i]):
+            out[i] = out[i - 1]
+        else:
+            out[i] = alpha * data_np[i] + (1 - alpha) * out[i - 1]
+    return out
 
 
 def clean_nan(val):
-    if isinstance(val, (float, np.floating)) and math.isnan(val): return None
+    if isinstance(val, (float, np.floating)):
+        if math.isnan(val): return None
+        return float(val)
     return val
 
 
@@ -113,7 +117,6 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = Path("result_benchmark") / f"Bench_{len(env_base.sensors)}sensors_{timestamp}"
 
-    # TẠO 3 THƯ MỤC CỐT LÕI
     data_dir = result_dir / "data"
     comp_plots_dir = result_dir / "comparative_plots"
     indiv_plots_dir = result_dir / "individual_algorithms"
@@ -135,11 +138,12 @@ def main():
     seeds = [42, 100, 2024]
     colors = {"MOEAD": "gray", "MO-PPO": "blue", "MO-TD3": "green", "MO-SAC": "red"}
 
+    # Thêm 'success_rate' vào dict lưu trữ
     raw_results = {algo: {seed: {
         'fronts_objs': [], 'final_pareto_shape': [],
         'actor_loss': [], 'critic_loss': [], 'value': [],
         'reward_exp': [], 'reward_len': [], 'reward_feas': [],
-        'time': 0.0, 'success': 0
+        'success_rate': [], 'time': 0.0, 'success': 0
     } for seed in seeds} for algo in algorithms}
     algo_configs = {}
 
@@ -149,8 +153,6 @@ def main():
     for algo_name, AlgoClass in algorithms.items():
         print("=" * 60)
         print(f"🔥 BẮT ĐẦU: {algo_name}")
-
-        # Tạo thư mục riêng cho thuật toán này
         algo_indiv_dir = indiv_plots_dir / algo_name
         algo_indiv_dir.mkdir(exist_ok=True)
 
@@ -158,43 +160,23 @@ def main():
             print(f"👉 Chạy Seed {seed}...")
             set_global_seeds(seed)
             env = config.get_environment(load_from_file=args.env_json)
-
             algo_cfg_name = algo_name.lower().replace("-", "_")
-
-            # 2. Đọc parameters từ file YAML
             algo_params = config.config.get('algorithm', {}).get(algo_cfg_name, {}).copy()
 
-            # 3. Xử lý logic số vòng lặp (Ưu tiên YAML > Terminal > Mặc định)
             current_max_episodes = algo_params.get('n_generations', 3000)
-            pop_size = algo_params.get('pop_size', 1)  # MOEAD là 50, RL là 1
+            pop_size = algo_params.get('pop_size', 1)
 
-            # Lưu lại để lát vẽ đồ thị
-            algo_configs[algo_name] = {
-                'steps': current_max_episodes,
-                'evals_per_step': pop_size
-            }
-
-            # Gán lại vào algo_params để truyền vào __init__ của thuật toán
+            algo_configs[algo_name] = {'steps': current_max_episodes, 'evals_per_step': pop_size}
             algo_params['n_generations'] = current_max_episodes
+            if algo_name != "MOEAD": algo_params['n_episodes'] = current_max_episodes
 
-            # Đối với RL (MO-PPO, MO-TD3, MO-SAC), ta cần thêm key 'n_episodes'
-            if algo_name != "MOEAD":
-                algo_params['n_episodes'] = current_max_episodes
-
-            # 4. Khởi tạo thuật toán với các tham số đã đọc được
             agent = AlgoClass(env, **algo_params)
 
             def create_callback(current_seed):
                 def cb(algo_instance, gen):
                     pf = algo_instance.pareto_front()
-
-                    obj_front = []
-                    for item in pf:
-                        objs = item[1]
-                        if objs[0] != float('inf'): obj_front.append([objs[0], objs[1]])
-
+                    obj_front = [[objs[0], objs[1]] for _, objs in pf if objs[0] != float('inf')]
                     raw_results[algo_name][current_seed]['fronts_objs'].append(obj_front)
-
                     raw_results[algo_name][current_seed]['actor_loss'].append(
                         getattr(algo_instance, 'current_actor_loss', float('nan')))
                     raw_results[algo_name][current_seed]['critic_loss'].append(
@@ -215,12 +197,13 @@ def main():
             run_time = time.perf_counter() - start_time
 
             raw_results[algo_name][seed]['time'] = run_time
+            # Lấy mảng success rate vừa mới sinh ra từ quá trình chạy
+            raw_results[algo_name][seed]['success_rate'] = agent.history_success_rate
 
             final_pf = agent.pareto_front()
-
             valid_final_objs = []
             final_pareto_shape = []
-            solutions_data = []  # Data để vẽ map
+            solutions_data = []
 
             for idx, item in enumerate(final_pf):
                 path, objs = item[0], item[1]
@@ -236,10 +219,9 @@ def main():
             raw_results[algo_name][seed]['success'] = 1 if len(valid_final_objs) > 0 else 0
             raw_results[algo_name][seed]['final_pareto_shape'] = final_pareto_shape
 
-            # --- VẼ BẢN ĐỒ ĐƯỜNG ĐI CHO SEED NÀY ---
             if len(solutions_data) > 0:
                 map_save_path = algo_indiv_dir / f"{algo_name}_Seed_{seed}_Map.png"
-                best_sol = solutions_data[0]  # Đại diện 1 nghiệm để highlight
+                best_sol = solutions_data[0]
                 plot_final_solutions(env, solutions_data, best_sol, map_save_path)
 
             print(f"   ✅ Xong Seed {seed} trong {run_time:.2f}s | Nghiệm: {len(valid_final_objs)}")
@@ -284,7 +266,6 @@ def main():
             for g_idx in range(steps):
                 gen_front = seed_fronts[g_idx] if g_idx < len(seed_fronts) else (seed_fronts[-1] if seed_fronts else [])
                 metrics[algo]['size'][s_idx, g_idx] = len(gen_front)
-
                 if len(gen_front) > 0:
                     norm_front = (np.array(gen_front) - global_min) / range_val
                     metrics[algo]['hv'][s_idx, g_idx] = ind_hv(norm_front)
@@ -298,20 +279,15 @@ def main():
     # =========================================================================
     print("📈 Đang vẽ Comparative Plots...")
     plots = [
-        ("01_Hypervolume_Compare.png", "Hypervolume Comparison", "HV", 'hv'),
-        ("02_IGD_Plus_Compare.png", "IGD+ Comparison", "IGD+", 'igd'),
-        ("03_Pareto_Size_Compare.png", "Pareto Solutions Count", "Count", 'size')
+        ("01_Hypervolume_Compare.png", "Hypervolume Comparison", "HV", 'hv', metrics),
+        ("02_IGD_Plus_Compare.png", "IGD+ Comparison", "IGD+", 'igd', metrics),
+        ("03_Pareto_Size_Compare.png", "Pareto Solutions Count", "Count", 'size', metrics)
     ]
-    for filename, title, ylabel, metric_key in plots:
+    for filename, title, ylabel, metric_key, src_dict in plots:
         fig, ax = plt.subplots(figsize=(10, 6))
         for algo in algorithms:
-            # TRỤC X MỚI: Số thứ tự bước * Số lượng cá thể (NFE)
-            steps = algo_configs[algo]['steps']
-            evals = algo_configs[algo]['evals_per_step']
-            x_axis = np.arange(1, steps + 1) * evals
-
-            plot_mean_std(ax, x_axis, metrics[algo][metric_key], algo, colors[algo])
-
+            x_axis = np.arange(1, algo_configs[algo]['steps'] + 1) * algo_configs[algo]['evals_per_step']
+            plot_mean_std(ax, x_axis, src_dict[algo][metric_key], algo, colors[algo])
         ax.set_title(title)
         ax.set_xlabel("Number of Path Evaluations (NFE)")
         ax.set_ylabel(ylabel)
@@ -320,18 +296,47 @@ def main():
         plt.savefig(comp_plots_dir / filename, dpi=300)
         plt.close()
 
-    # Time & Success Bar Chart
-    fig, axs = plt.subplots(1, 2, figsize=(14, 5))
+    # Biểu đồ Success Rate theo thời gian (Moving Average)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for algo in algorithms:
+        x_axis = np.arange(1, algo_configs[algo]['steps'] + 1) * algo_configs[algo]['evals_per_step']
+        data_matrix = [raw_results[algo][s]['success_rate'] for s in seeds]
+        plot_mean_std(ax, x_axis, data_matrix, algo, colors[algo])
+    ax.set_title("Training Success Rate (Moving Average over 100 Evals)")
+    ax.set_xlabel("Number of Path Evaluations (NFE)")
+    ax.set_ylabel("Success Rate (%)")
+    ax.set_ylim(-5, 105)
+    ax.grid(True)
+    ax.legend()
+    plt.savefig(comp_plots_dir / "04_SuccessRate_Compare.png", dpi=300)
+    plt.close()
+
+    # Biểu đồ Scatter: Tập hợp Pareto Front cuối cùng (Objective Space)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    for algo in algorithms:
+        all_x, all_y = [], []
+        for seed in seeds:
+            for sol in raw_results[algo][seed]['final_pareto_shape']:
+                all_x.append(sol['exposure'])
+                all_y.append(sol['length'])
+        if all_x:
+            ax.scatter(all_x, all_y, c=colors[algo], label=algo, alpha=0.7, edgecolors='none', s=40)
+    ax.set_title("Final Pareto Fronts (Objective Space) - All Seeds")
+    ax.set_xlabel("Exposure (Minimize)")
+    ax.set_ylabel("Length (Minimize)")
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.legend()
+    plt.savefig(comp_plots_dir / "05_ParetoFront_Scatter.png", dpi=300)
+    plt.close()
+
+    # Time Bar Chart
+    fig, ax = plt.subplots(figsize=(7, 5))
     algo_names = list(algorithms.keys())
     avg_t = [np.mean([raw_results[a][s]['time'] for s in seeds]) for a in algo_names]
     std_t = [np.std([raw_results[a][s]['time'] for s in seeds]) for a in algo_names]
-    suc_r = [np.mean([raw_results[a][s]['success'] for s in seeds]) * 100 for a in algo_names]
-    axs[0].bar(algo_names, avg_t, yerr=std_t, capsize=5, color=[colors[a] for a in algo_names], alpha=0.7)
-    axs[0].set_title("Execution Time (s)")
-    axs[1].bar(algo_names, suc_r, color=[colors[a] for a in algo_names], alpha=0.7)
-    axs[1].set_title("Success Rate (%)")
-    axs[1].set_ylim(0, 110)
-    plt.savefig(comp_plots_dir / "06_Time_SuccessRate.png", dpi=300)
+    ax.bar(algo_names, avg_t, yerr=std_t, capsize=5, color=[colors[a] for a in algo_names], alpha=0.7)
+    ax.set_title("Execution Time (s)")
+    plt.savefig(comp_plots_dir / "06_ExecutionTime.png", dpi=300)
     plt.close()
 
     # =========================================================================
@@ -340,13 +345,8 @@ def main():
     print("📈 Đang vẽ Individual Plots...")
     for algo in algorithms:
         algo_dir = indiv_plots_dir / algo
+        x_axis = np.arange(1, algo_configs[algo]['steps'] + 1) * algo_configs[algo]['evals_per_step']
 
-        # TẠO TRỤC X RIÊNG CHO TỪNG THUẬT TOÁN
-        steps = algo_configs[algo]['steps']
-        evals = algo_configs[algo]['evals_per_step']
-        x_axis = np.arange(1, steps + 1) * evals
-
-        # 4.1 HV và IGD+ của từng thuật toán
         fig, axs = plt.subplots(1, 2, figsize=(14, 5))
         for s_idx, s in enumerate(seeds):
             axs[0].plot(x_axis, metrics[algo]['hv'][s_idx], alpha=0.3, label=f'Seed {s}')
@@ -354,76 +354,94 @@ def main():
 
         axs[0].plot(x_axis, np.nanmean(metrics[algo]['hv'], axis=0), 'k-', linewidth=2.5, label='Mean')
         axs[1].plot(x_axis, np.nanmean(metrics[algo]['igd'], axis=0), 'k-', linewidth=2.5, label='Mean')
-
         axs[0].set_title(f"{algo} - Hypervolume")
-        axs[0].set_xlabel("Number of Path Evaluations (NFE)")
+        axs[0].set_xlabel("NFE")
         axs[0].grid(True)
         axs[0].legend()
-
         axs[1].set_title(f"{algo} - IGD+")
-        axs[1].set_xlabel("Number of Path Evaluations (NFE)")
+        axs[1].set_xlabel("NFE")
         axs[1].grid(True)
         axs[1].legend()
         plt.savefig(algo_dir / f"{algo}_Metrics_HV_IGD.png", dpi=300)
         plt.close()
 
-        # 4.2 Nếu là RL, vẽ thêm Loss và Reward
         if algo != "MOEAD":
             fig, axs = plt.subplots(2, 3, figsize=(18, 10))
             metrics_rl = [
-                ('actor_loss', 0, 0, 'Actor Loss'),
-                ('critic_loss', 0, 1, 'Critic Loss'),
+                ('actor_loss', 0, 0, 'Actor Loss'), ('critic_loss', 0, 1, 'Critic Loss'),
                 ('value', 0, 2, 'Value (Q/V)'),
-                ('reward_exp', 1, 0, 'Reward: Exposure'),
-                ('reward_len', 1, 1, 'Reward: Length'),
+                ('reward_exp', 1, 0, 'Reward: Exposure'), ('reward_len', 1, 1, 'Reward: Length'),
                 ('reward_feas', 1, 2, 'Reward: Feasibility')
             ]
-
             for key, row, col, title in metrics_rl:
                 data_matrix = np.array([raw_results[algo][s][key] for s in seeds])
                 if not np.all(np.isnan(data_matrix)):
+                    # [CẢI TIẾN]: Dùng EMA smoothing trước khi vẽ để khử răng cưa
+                    smoothed_data = [ema(d, alpha=0.05) for d in data_matrix]
                     for s_idx, s in enumerate(seeds):
-                        axs[row, col].plot(x_axis, data_matrix[s_idx], alpha=0.3, label=f'Seed {s}')
-                    axs[row, col].plot(x_axis, np.nanmean(data_matrix, axis=0), 'k-', linewidth=2.5, label='Mean')
-                axs[row, col].set_title(f"{algo} - {title}")
-                axs[row, col].set_xlabel("Number of Path Evaluations (NFE)")
+                        axs[row, col].plot(x_axis, smoothed_data[s_idx], alpha=0.25, label=f'Seed {s}')
+                    axs[row, col].plot(x_axis, np.nanmean(smoothed_data, axis=0), 'k-', linewidth=2, label='Mean EMA')
+                axs[row, col].set_title(f"{algo} - {title} (Smoothed)")
+                axs[row, col].set_xlabel("NFE")
                 axs[row, col].grid(True)
                 axs[row, col].legend()
-
             plt.tight_layout()
             plt.savefig(algo_dir / f"{algo}_Loss_Reward.png", dpi=300)
             plt.close()
+
     # =========================================================================
-    # 5. LƯU DỮ LIỆU JSON
+    # 5. TÁCH FILE JSON (BẢO TOÀN DỮ LIỆU THÔ BACKUP)
     # =========================================================================
-    summary_data, detailed_data = {}, {}
+    print("💾 Đang xuất file JSON...")
+    # Tóm tắt
+    summary_data = {}
     for algo in algorithms:
         summary_data[algo] = {
             "avg_time": float(np.mean([raw_results[algo][s]['time'] for s in seeds])),
-            "success_rate": float(np.mean([raw_results[algo][s]['success'] for s in seeds]) * 100),
+            "final_success_rate": float(np.mean(
+                [raw_results[algo][s]['success_rate'][-1] if raw_results[algo][s]['success_rate'] else 0 for s in
+                 seeds])),
             "final_hv_mean": float(np.mean(metrics[algo]['hv'][:, -1])),
             "final_igd_mean": float(np.mean(metrics[algo]['igd'][:, -1]))
         }
+    save_json(summary_data, data_dir / "00_benchmark_summary.json")
 
-        detailed_data[algo] = {}
-        for idx, seed in enumerate(seeds):
-            detailed_data[algo][f"Seed_{seed}"] = {
-                "time": float(raw_results[algo][seed]['time']),
-                "success": bool(raw_results[algo][seed]['success']),
-                "final_hv": float(metrics[algo]['hv'][idx, -1]),
-                "final_igd_plus": float(metrics[algo]['igd'][idx, -1]),
-                "final_pareto_size": int(metrics[algo]['size'][idx, -1]),
-                "final_pareto_front_shape": raw_results[algo][seed]['final_pareto_shape'],
-                "history_actor_loss": [clean_nan(x) for x in raw_results[algo][seed]['actor_loss']],
-                "history_critic_loss": [clean_nan(x) for x in raw_results[algo][seed]['critic_loss']],
-                "history_reward_exp": [clean_nan(x) for x in raw_results[algo][seed]['reward_exp']],
-                "history_reward_len": [clean_nan(x) for x in raw_results[algo][seed]['reward_len']],
-                "history_reward_feas": [clean_nan(x) for x in raw_results[algo][seed]['reward_feas']],
-                "history_value": [clean_nan(x) for x in raw_results[algo][seed]['value']]
-            }
+    # Các loại Metrics cần xuất riêng thành từng file
+    metric_keys = [
+        ('hv', metrics, lambda algo, s_idx: metrics[algo]['hv'][s_idx].tolist()),
+        ('igd_plus', metrics, lambda algo, s_idx: metrics[algo]['igd'][s_idx].tolist()),
+        ('pareto_size', metrics, lambda algo, s_idx: metrics[algo]['size'][s_idx].tolist()),
+        ('success_rate', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['success_rate']]),
+        ('actor_loss', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['actor_loss']]),
+        ('critic_loss', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['critic_loss']]),
+        ('value', raw_results, lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['value']]),
+        ('reward_exp', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['reward_exp']]),
+        ('reward_len', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['reward_len']]),
+        ('reward_feas', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['reward_feas']]),
+    ]
 
-    save_json(summary_data, data_dir / "benchmark_summary.json")
-    save_json(detailed_data, data_dir / "detailed_per_seed.json")
+    for metric_name, _, extractor in metric_keys:
+        metric_dict = {}
+        for algo in algorithms:
+            metric_dict[algo] = {}
+            for s_idx, seed in enumerate(seeds):
+                # MOEAD không có loss/reward, hàm extractor sẽ trả về list rỗng
+                metric_dict[algo][f"Seed_{seed}"] = extractor(algo, s_idx)
+        save_json(metric_dict, data_dir / f"data_{metric_name}.json")
+
+    # Lưu riêng Shape của tập Pareto cuối cùng (Phục vụ vẽ Scatter)
+    pf_shape_dict = {}
+    for algo in algorithms:
+        pf_shape_dict[algo] = {}
+        for seed in seeds:
+            pf_shape_dict[algo][f"Seed_{seed}"] = raw_results[algo][seed]['final_pareto_shape']
+    save_json(pf_shape_dict, data_dir / "data_final_pareto_shape.json")
 
     print("\n" + "=" * 60)
     print(f"🎉 HOÀN TẤT BENCHMARK TOÀN DIỆN!")

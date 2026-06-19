@@ -8,7 +8,7 @@ import copy
 from general.point import Point
 from general.path import Path
 from shapely.geometry import Point as ShapelyPoint
-
+from collections import deque
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -164,6 +164,9 @@ class MO_TD3:
         self.current_reward_len = 0.0
         self.current_reward_feas = 0.0
         self.current_value = 0.0
+
+        self.recent_successes = deque(maxlen=100)
+        self.history_success_rate = []
 
         # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
     def _sample_weights(self) -> tuple[float, float]:
@@ -375,7 +378,8 @@ class MO_TD3:
 
             # [CẢI TIẾN 3]: Đánh giá cuối đường đi & Add Terminal Bonus giống hệt MO-PPO
             if not crashed:
-                objs = self.evaluate_path(current_pts)
+                self.recent_successes.append(1)  # [THÊM]
+                objs = self.evaluate_path(current_pts)  # (Đối với PPO/TD3 là current_pts)
                 self.update_ep(current_pts, objs)
 
                 if objs[0] != float('inf') and len(episode_transitions) > 0:
@@ -391,7 +395,12 @@ class MO_TD3:
                     # Gán lại giá trị reward điểm cuối
                     episode_transitions[-1] = (s, a, new_r_e, new_r_l, new_r_f, ns, d)
             else:
-                objs = (float('inf'), float('inf'))
+                self.recent_successes.append(0)  # [THÊM]
+                objs = (float('inf'), float('inf'))  # Hoặc [float('inf'), float('inf')] tùy file cũ
+
+            # [THÊM MỚI] Tính toán và lưu Moving Average Success Rate
+            curr_sr = (sum(self.recent_successes) / len(self.recent_successes)) * 100.0 if self.recent_successes else 0.0
+            self.history_success_rate.append(curr_sr)
 
             if len(episode_transitions) > 0:
                 self.current_reward_exp = sum([t[2] for t in episode_transitions])

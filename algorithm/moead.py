@@ -68,6 +68,8 @@ class MOEAD:
         # External Population (EP) - Nơi lưu Pareto Front
         self.EP = []
 
+        self.history_success_rate = []
+
     def generate_lambdas(self) -> np.ndarray:
         lambdas = np.zeros((self.pop_size, 2))
         for i in range(self.pop_size):
@@ -334,8 +336,12 @@ class MOEAD:
             if callback:
                 callback(self, gen)
 
+            valid_count = sum(1 for obj in self.objectives if obj[0] != float('inf'))
+            curr_sr = (valid_count / self.pop_size) * 100.0
+            self.history_success_rate.append(curr_sr)
+
             if verbose and gen % 10 == 0:
-                print(f"Gen {gen:3d}/{self.n_generations} | EP Size: {len(self.EP)}")
+                print(f"Gen {gen:3d}/{self.n_generations} | SR: {curr_sr:.1f}% | EP Size: {len(self.EP)}")
 
     def pareto_front(self):
         # Chuyển đổi về list of Point để tương thích định dạng với thuật toán RL

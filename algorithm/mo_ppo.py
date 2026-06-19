@@ -6,6 +6,7 @@ import numpy as np
 from general.point import Point
 from general.path import Path
 from shapely.geometry import Point as ShapelyPoint
+from collections import deque
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -85,6 +86,9 @@ class MO_PPO:
         self.current_reward_len = 0.0
         self.current_reward_feas = 0.0
         self.current_value = 0.0
+
+        self.recent_successes = deque(maxlen=100)
+        self.history_success_rate = []
 
     def _sample_weights(self) -> tuple[float, float]:
         """Sample weights once per batch"""
@@ -318,6 +322,7 @@ class MO_PPO:
 
             # Terminal reward
             if not crashed:
+                self.recent_successes.append(1)  # [THÊM] Lưu thành công
                 objs = self.evaluate_path(current_pts)
                 self.update_ep(current_pts, objs)
                 if objs[0] != float('inf') and len(rewards_exp) > 0:
@@ -327,7 +332,12 @@ class MO_PPO:
                     rewards_len[-1] += max(0.0, self.max_expected_length - actual_len) * 0.5
                     rewards_feas[-1] += 50.0
             else:
+                self.recent_successes.append(0)  # [THÊM] Lưu thất bại
                 objs = (float('inf'), float('inf'))
+
+            # [THÊM MỚI] Tính toán và lưu Moving Average Success Rate
+            curr_sr = (sum(self.recent_successes) / len(self.recent_successes)) * 100.0 if self.recent_successes else 0.0
+            self.history_success_rate.append(curr_sr)
 
             self.current_reward_exp = sum(rewards_exp)
             self.current_reward_len = sum(rewards_len)
