@@ -109,6 +109,7 @@ def clean_nan(val):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark 4 MO-RL Algorithms")
     parser.add_argument("env_json", help="Path to the environment JSON file")
+    parser.add_argument("--algo", type=str, default="ALL", help="Tên thuật toán muốn chạy lẻ (VD: MO-PPO, MO-SAC). Để trống sẽ chạy ALL.")
     args = parser.parse_args()
 
     config = load_config()
@@ -135,6 +136,18 @@ def main():
     save_json(env_info, data_dir / "environment_info.json")
 
     algorithms = {"MOEAD": MOEAD, "MO-PPO": MO_PPO, "MO-TD3": MO_TD3, "MO-SAC": MO_SAC}
+
+    if args.algo != "ALL":
+        algo_name = args.algo.upper().replace('_', '-')
+
+        if algo_name in algorithms:
+            algorithms = {algo_name: algorithms[algo_name]}
+            print(f"🛠 CHẾ ĐỘ TEST NHANH: Chỉ chạy thuật toán {algo_name}")
+        else:
+            print(f"❌ Lỗi: Không tìm thấy thuật toán '{args.algo}'.")
+            print(f"Các tên hợp lệ có thể gõ: moead, mo_ppo, mo_td3, mo_sac")
+            return
+
     seeds = [42, 100, 2024]
     colors = {"MOEAD": "gray", "MO-PPO": "blue", "MO-TD3": "green", "MO-SAC": "red"}
 

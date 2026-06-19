@@ -36,11 +36,11 @@ obstacle:
 algorithm:
 
   mo_ppo:
-    n_generations: 500
+    n_generations: 1500
     hidden_size: 256
     timesteps_per_batch: 2048            # Số bước chạy trước khi cập nhật
     batch_size: 64           # Kích thước batch để training
-    n_epochs: 10             # Số lần training lại trên cùng dữ liệu
+    n_epochs: 5             # Số lần training lại trên cùng dữ liệu
     lr: 0.0003               # Learning rate
     gamma: 0.99              # Hệ số chiết khấu (Discount factor)
 #    gae_lambda: 0.95         # Hệ số GAE để tính advantage

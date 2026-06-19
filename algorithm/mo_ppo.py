@@ -59,7 +59,8 @@ class MO_PPO:
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
         self.base_state_dim = 13
-        self.state_dim = 15  # 13 base + w_exp + w_len (không đưa w_feas vào state)
+        # [ĐÃ SỬA] Đổi thành 16 để khớp với TD3/SAC (13 base + w_exp + w_len + w_feas)
+        self.state_dim = 16
         self.action_dim = 1
         self.action_scale = 8.0
 
@@ -192,16 +193,16 @@ class MO_PPO:
         ret_len_t = torch.tensor(returns_len, dtype=torch.float32)
         ret_feas_t = torch.tensor(returns_feas, dtype=torch.float32)
 
-        def normalize(tensor):
-            if tensor.numel() > 1:
-                return (tensor - tensor.mean()) / (tensor.std() + 1e-8)
-            return tensor
+        def safe_norm(t):
+            return (t - t.mean()) / (t.std() + 1e-8)
 
-        ret_exp_norm = normalize(ret_exp_t)
-        ret_len_norm = normalize(ret_len_t)
-        ret_feas_norm = normalize(ret_feas_t)
+        ret_exp_norm = safe_norm(ret_exp_t)
+        ret_len_norm = safe_norm(ret_len_t)
+        ret_feas_norm = safe_norm(ret_feas_t)
 
-        scal_returns = w_exp_t * ret_exp_norm + w_len_t * ret_len_norm + w_feas_t * ret_feas_norm
+        scal_returns = (w_exp_t * ret_exp_norm +
+                        w_len_t * ret_len_norm +
+                        w_feas_t * ret_feas_norm)
 
         old_states = torch.FloatTensor(np.array(states))
         old_actions = torch.FloatTensor(np.array(actions)).unsqueeze(1)
@@ -209,43 +210,54 @@ class MO_PPO:
 
         with torch.no_grad():
             _, old_v_exp, old_v_len, old_v_feas, _ = self.policy_old.evaluate(old_states, old_actions)
-            old_v_scalar = w_exp_t * old_v_exp + w_len_t * old_v_len + w_feas_t * old_v_feas
-            self.current_value = old_v_scalar.mean().item()
+            # ✅ SỬA: normalize value estimates để cùng scale với scal_returns
+            old_v_scalar = (w_exp_t * safe_norm(old_v_exp) +
+                            w_len_t * safe_norm(old_v_len) +
+                            w_feas_t * safe_norm(old_v_feas))
 
         advantages = scal_returns - old_v_scalar
         if advantages.numel() > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        LossFn = nn.MSELoss()
+
         actor_loss = torch.tensor(0.0)
         critic_loss = torch.tensor(0.0)
 
-
         for _ in range(self.K_epochs):
-            logprobs_new, v_exp, v_len, v_feas, dist_entropy = self.policy.evaluate(old_states, old_actions)
+            logprobs_new, v_exp, v_len, v_feas, dist_entropy = self.policy.evaluate(
+                old_states, old_actions
+            )
 
             ratios = torch.exp(logprobs_new - old_logprobs.detach())
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-
             actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = (self.MseLoss(v_exp, ret_exp_norm) +
-                           self.MseLoss(v_len, ret_len_norm) +
-                           self.MseLoss(v_feas, ret_feas_norm))
 
-            loss = actor_loss + 0.5 * critic_loss - 0.01 * dist_entropy.mean()
+            critic_loss = (LossFn(v_exp, ret_exp_norm) +
+                           LossFn(v_len, ret_len_norm) +
+                           LossFn(v_feas, ret_feas_norm))
+
+            loss = actor_loss + 0.5 * critic_loss - 0.02 * dist_entropy.mean()
 
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
             self.optimizer.step()
 
-            # Stabilize exploration
             with torch.no_grad():
-                self.policy.log_std.data.clamp_(min=-2.0, max=0.0)
+                self.policy.log_std.data.clamp_(min=-3.0, max=0.5)
+
+        # ✅ SỬA: log current_value từ policy MỚI sau khi đã update xong K_epochs
+        with torch.no_grad():
+            _, v_exp_new, v_len_new, v_feas_new, _ = self.policy.evaluate(old_states, old_actions)
+            v_scalar_new = (w_exp_t * safe_norm(v_exp_new) +
+                            w_len_t * safe_norm(v_len_new) +
+                            w_feas_t * safe_norm(v_feas_new))
+            self.current_value = v_scalar_new.mean().item()
 
         self.current_actor_loss = actor_loss.item()
         self.current_critic_loss = critic_loss.item()
-
         self.policy_old.load_state_dict(self.policy.state_dict())
 
     def run(self, verbose: bool = True, callback=None):
@@ -253,9 +265,12 @@ class MO_PPO:
         batch_ret_exp, batch_ret_len, batch_ret_feas, batch_weights = [], [], [], []
         total_timesteps = 0
 
-        w_exp, w_len = self._sample_weights()  # Sample once per batch
+        # [ĐÃ SỬA]: Xóa dòng _sample_weights() ở ngoài vòng lặp này
 
         for episode in range(1, self.max_episodes + 1):
+
+            # [ĐĐ SỬA]: Di chuyển việc sample weights vào TỪNG EPISODE giống hệt SAC/TD3
+            w_exp, w_len = self._sample_weights()
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
             # Start position
@@ -273,7 +288,9 @@ class MO_PPO:
 
             for x in self.xs[1:]:
                 base_state = self.get_base_state(prev_x, state_y, prev_action)
-                state = np.append(base_state, [w_exp, w_len]).astype(np.float32)
+
+                # [ĐÃ SỬA]: Nối đủ 3 trọng số [w_exp, w_len, w_feas] để tạo state kích thước 16
+                state = np.append(base_state, [w_exp, w_len, w_feas]).astype(np.float32)
 
                 action, log_prob = self.select_action(state)
                 raw_next_y = state_y + action * self.action_scale
@@ -322,7 +339,7 @@ class MO_PPO:
 
             # Terminal reward
             if not crashed:
-                self.recent_successes.append(1)  # [THÊM] Lưu thành công
+                self.recent_successes.append(1)
                 objs = self.evaluate_path(current_pts)
                 self.update_ep(current_pts, objs)
                 if objs[0] != float('inf') and len(rewards_exp) > 0:
@@ -332,11 +349,11 @@ class MO_PPO:
                     rewards_len[-1] += max(0.0, self.max_expected_length - actual_len) * 0.5
                     rewards_feas[-1] += 50.0
             else:
-                self.recent_successes.append(0)  # [THÊM] Lưu thất bại
+                self.recent_successes.append(0)
                 objs = (float('inf'), float('inf'))
 
-            # [THÊM MỚI] Tính toán và lưu Moving Average Success Rate
-            curr_sr = (sum(self.recent_successes) / len(self.recent_successes)) * 100.0 if self.recent_successes else 0.0
+            curr_sr = (sum(self.recent_successes) / len(
+                self.recent_successes)) * 100.0 if self.recent_successes else 0.0
             self.history_success_rate.append(curr_sr)
 
             self.current_reward_exp = sum(rewards_exp)
@@ -373,8 +390,7 @@ class MO_PPO:
                 batch_weights.clear()
                 total_timesteps = 0
 
-                # Sample new weights after update
-                w_exp, w_len = self._sample_weights()
+                # [ĐÃ SỬA]: Xóa việc sample weights ở đây, vì đã chuyển lên đầu episode
 
             if verbose and episode % 100 == 0:
                 exp_str = f"{-objs[0]:.3f}" if objs[0] != float('inf') else "Crash"
