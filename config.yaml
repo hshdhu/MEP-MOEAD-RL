@@ -36,7 +36,7 @@ obstacle:
 algorithm:
 
   mo_ppo:
-    n_generations: 1500
+    n_generations: 1000
     hidden_size: 256
     timesteps_per_batch: 2048            # Số bước chạy trước khi cập nhật
     batch_size: 64           # Kích thước batch để training
@@ -50,7 +50,7 @@ algorithm:
     pop_size: 1              # Chạy đơn lẻ
 
   mo_td3:
-    n_generations: 500      # Đồng bộ bằng đúng n_generations của PPO
+    n_generations: 1000      # Đồng bộ bằng đúng n_generations của PPO
     batch_size: 256          # Cỡ batch lấy từ Replay Buffer (Off-policy thường dùng 128-256)
     hidden_size: 256         # Số node ẩn trong mạng (Bằng với kiến trúc PPO)
     lr: 0.0003               # Learning rate (Thường TD3/SAC xài 3e-4, PPO xài 1e-4)
@@ -65,7 +65,7 @@ algorithm:
     max_replay_buffer: 100000
 
   mo_sac:
-    n_generations: 500
+    n_generations: 1000
     batch_size: 256
     hidden_size: 256
     lr: 0.0003

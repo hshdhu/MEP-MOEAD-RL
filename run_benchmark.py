@@ -324,22 +324,87 @@ def main():
     plt.savefig(comp_plots_dir / "04_SuccessRate_Compare.png", dpi=300)
     plt.close()
 
-    # Biểu đồ Scatter: Tập hợp Pareto Front cuối cùng (Objective Space)
-    fig, ax = plt.subplots(figsize=(10, 8))
+    # --- [CẢI TIẾN MỚI] HÀM HỖ TRỢ VẼ PARETO FRONT ---
+    def get_sorted_front(pareto_data):
+        """Lấy data, sắp xếp theo X để nối thành đường kẻ line"""
+        points = [(d['exposure'], d['length']) for d in pareto_data]
+        points.sort(key=lambda val: val[0])  # Sắp xếp theo Exposure tăng dần
+        if not points: return [], []
+        x, y = zip(*points)
+        return list(x), list(y)
+
+    def get_global_best_front(algo_results, seed_list):
+        """Lấy tất cả điểm của các seeds, lọc ra tập Non-dominated đại diện mạnh nhất"""
+        all_pts = []
+        for s in seed_list:
+            for sol in algo_results[s]['final_pareto_shape']:
+                all_pts.append([sol['exposure'], sol['length']])
+        if not all_pts: return [], []
+
+        all_pts = np.array(all_pts)
+        curr_nds = NonDominatedSorting()
+        front_idx = curr_nds.do(all_pts, only_non_dominated_front=True)
+        best_pts = all_pts[front_idx]
+        best_pts = best_pts[best_pts[:, 0].argsort()]  # Sắp xếp theo X
+        return best_pts[:, 0], best_pts[:, 1]
+
+    # BIỂU ĐỒ 05A: Lưới các thuật toán (Subplots), mỗi ô hiển thị các seed riêng lẻ
+    num_algos = len(algorithms)
+    cols = 2 if num_algos > 1 else 1
+    rows = math.ceil(num_algos / cols)
+    fig, axs = plt.subplots(rows, cols, figsize=(6 * cols, 5 * rows))
+    axs = axs.flatten() if num_algos > 1 else [axs]
+
+    # Tìm giới hạn trục (Min/Max) để các ô có cùng hệ quy chiếu (dễ so sánh)
+    global_min_x, global_max_x = float('inf'), float('-inf')
+    global_min_y, global_max_y = float('inf'), float('-inf')
     for algo in algorithms:
-        all_x, all_y = [], []
         for seed in seeds:
-            for sol in raw_results[algo][seed]['final_pareto_shape']:
-                all_x.append(sol['exposure'])
-                all_y.append(sol['length'])
-        if all_x:
-            ax.scatter(all_x, all_y, c=colors[algo], label=algo, alpha=0.7, edgecolors='none', s=40)
-    ax.set_title("Final Pareto Fronts (Objective Space) - All Seeds")
+            x, y = get_sorted_front(raw_results[algo][seed]['final_pareto_shape'])
+            if x:
+                global_min_x, global_max_x = min(global_min_x, min(x)), max(global_max_x, max(x))
+                global_min_y, global_max_y = min(global_min_y, min(y)), max(global_max_y, max(y))
+
+    padding_x = (global_max_x - global_min_x) * 0.05 if global_max_x > global_min_x else 1.0
+    padding_y = (global_max_y - global_min_y) * 0.05 if global_max_y > global_min_y else 1.0
+
+    seed_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']  # Bảng màu cho seed
+
+    for idx, algo in enumerate(algorithms):
+        ax = axs[idx]
+        for s_idx, seed in enumerate(seeds):
+            x, y = get_sorted_front(raw_results[algo][seed]['final_pareto_shape'])
+            if x:
+                # Dùng đường gãy khúc (line) có điểm tròn (marker)
+                c = seed_colors[s_idx % len(seed_colors)]
+                ax.plot(x, y, marker='o', markersize=4, linewidth=1.5, color=c, alpha=0.7, label=f'Seed {seed}')
+
+        ax.set_title(f"{algo} - Pareto Fronts")
+        ax.set_xlabel("Exposure (Minimize)")
+        ax.set_ylabel("Length (Minimize)")
+        ax.set_xlim(global_min_x - padding_x, global_max_x + padding_x)
+        ax.set_ylim(global_min_y - padding_y, global_max_y + padding_y)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(comp_plots_dir / "05A_ParetoFront_Grid_AllSeeds.png", dpi=300)
+    plt.close()
+
+    # BIỂU ĐỒ 05B: So sánh đỉnh cao (Global Best Front của mỗi thuật toán)
+    fig, ax = plt.subplots(figsize=(9, 7))
+    for algo in algorithms:
+        x, y = get_global_best_front(raw_results[algo], seeds)
+        if len(x) > 0:
+            ax.plot(x, y, marker='s', markersize=5, linewidth=2.0,
+                    color=colors[algo], label=algo, alpha=0.85)
+
+    ax.set_title("Best Non-Dominated Front per Algorithm (Aggregated from all seeds)")
     ax.set_xlabel("Exposure (Minimize)")
     ax.set_ylabel("Length (Minimize)")
     ax.grid(True, linestyle='--', alpha=0.5)
-    ax.legend()
-    plt.savefig(comp_plots_dir / "05_ParetoFront_Scatter.png", dpi=300)
+    ax.legend(fontsize=11)
+    plt.savefig(comp_plots_dir / "05B_ParetoFront_GlobalBest_Compare.png", dpi=300)
     plt.close()
 
     # Time Bar Chart
@@ -360,6 +425,23 @@ def main():
         algo_dir = indiv_plots_dir / algo
         x_axis = np.arange(1, algo_configs[algo]['steps'] + 1) * algo_configs[algo]['evals_per_step']
 
+        # [MỚI] Vẽ đồ thị Pareto Line riêng cho từng thuật toán vào folder của nó
+        fig_pf, ax_pf = plt.subplots(figsize=(8, 6))
+        for s_idx, seed in enumerate(seeds):
+            x, y = get_sorted_front(raw_results[algo][seed]['final_pareto_shape'])
+            if x:
+                c = seed_colors[s_idx % len(seed_colors)]
+                ax_pf.plot(x, y, marker='o', markersize=5, linewidth=2, color=c, alpha=0.8, label=f'Seed {seed}')
+
+        ax_pf.set_title(f"Pareto Fronts - {algo}")
+        ax_pf.set_xlabel("Exposure (Minimize)")
+        ax_pf.set_ylabel("Length (Minimize)")
+        ax_pf.grid(True, linestyle='--', alpha=0.5)
+        ax_pf.legend()
+        plt.savefig(algo_dir / f"{algo}_ParetoFronts_Lines.png", dpi=300)
+        plt.close()
+
+        # Phần vẽ HV / IGD
         fig, axs = plt.subplots(1, 2, figsize=(14, 5))
         for s_idx, s in enumerate(seeds):
             axs[0].plot(x_axis, metrics[algo]['hv'][s_idx], alpha=0.3, label=f'Seed {s}')
@@ -378,6 +460,7 @@ def main():
         plt.savefig(algo_dir / f"{algo}_Metrics_HV_IGD.png", dpi=300)
         plt.close()
 
+        # Phần vẽ Reward/Loss (Giữ nguyên như bạn đã cung cấp)
         if algo != "MOEAD":
             fig, axs = plt.subplots(2, 3, figsize=(18, 10))
             metrics_rl = [
@@ -389,7 +472,6 @@ def main():
             for key, row, col, title in metrics_rl:
                 data_matrix = np.array([raw_results[algo][s][key] for s in seeds])
                 if not np.all(np.isnan(data_matrix)):
-                    # [CẢI TIẾN]: Dùng EMA smoothing trước khi vẽ để khử răng cưa
                     smoothed_data = [ema(d, alpha=0.05) for d in data_matrix]
                     for s_idx, s in enumerate(seeds):
                         axs[row, col].plot(x_axis, smoothed_data[s_idx], alpha=0.25, label=f'Seed {s}')
