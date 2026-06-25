@@ -23,10 +23,17 @@ def main():
     
     # Determine save folder based on sensor count
     num_sensors = len(env.sensors)
-    if num_sensors <= 50:
+
+    if num_sensors <= 30:
+        folder_name = "30 sensors"
+    elif num_sensors <= 50:
         folder_name = "50 sensors"
+    elif num_sensors <= 60:
+        folder_name = "60 sensors"
     elif num_sensors <= 100:
         folder_name = "100 sensors"
+    elif num_sensors <= 120:
+        folder_name = "120 sensors"
     elif num_sensors <= 150:
         folder_name = "150 sensors"
     else:

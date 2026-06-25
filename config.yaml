@@ -1,15 +1,14 @@
 # Environment Settings
 environment:
-  width: 400
-  height: 400
-  num_sensors: 200
-  num_obstacles: 8
+  width: 300
+  height: 300
+  num_sensors: 30
+  num_obstacles: 4
   coverage_ratio: 0.2
 
 # Path Representation
 path:
-  dx: 5
-  length_max: 5000.0
+  dx: 6
 
 # Exposure Calculation
 exposure:
@@ -17,47 +16,47 @@ exposure:
 
 # Repair Parameters
 repair:
-  attempts: 100
+  attempts: 40
 
 # Sensor & Obstacle Settings
 sensor:
-  radius_min: 5
+  radius_min: 10
   radius_max: 50
   power: 1.0
 
 obstacle:
-  min_distance: 5
+  min_distance: 10
   min_area: 50
   radius_min: 15
-  radius_max: 75
+  radius_max: 50
   vertices_min: 4
   vertices_max: 8
 
 algorithm:
 
   mo_ppo:
-    n_generations: 1000
+    n_generations: 3000
     hidden_size: 256
     timesteps_per_batch: 2048            # Số bước chạy trước khi cập nhật
-    batch_size: 64           # Kích thước batch để training
+#    batch_size: 64           # Kích thước batch để training
     n_epochs: 5             # Số lần training lại trên cùng dữ liệu
     lr: 0.0003               # Learning rate
     gamma: 0.99              # Hệ số chiết khấu (Discount factor)
 #    gae_lambda: 0.95         # Hệ số GAE để tính advantage
     clip_range: 0.2          # Tham số chặn của PPO
 #    ent_coef: 0.04           # Hệ số entropy để khuyến khích khám phá
-    action_scale: 8.0        # Giới hạn dịch chuyển Y
+    action_scale: 6.0        # Giới hạn dịch chuyển Y
     pop_size: 1              # Chạy đơn lẻ
 
   mo_td3:
-    n_generations: 1000      # Đồng bộ bằng đúng n_generations của PPO
+    n_generations: 3000      # Đồng bộ bằng đúng n_generations của PPO
     batch_size: 256          # Cỡ batch lấy từ Replay Buffer (Off-policy thường dùng 128-256)
     hidden_size: 256         # Số node ẩn trong mạng (Bằng với kiến trúc PPO)
     lr: 0.0003               # Learning rate (Thường TD3/SAC xài 3e-4, PPO xài 1e-4)
     gamma: 0.99              # Hệ số chiết khấu
     tau: 0.005               # Hệ số cập nhật mềm cho Target Net
 
-    action_scale: 8.0
+    action_scale: 6.0
     exploration_noise: 0.1   # SỬA QUAN TRỌNG: Nhiễu 10% trên dải [-1, 1] của mạng Actor
     policy_noise: 0.2        # Nhiễu thêm vào Target Policy (Chống overestimation)
     noise_clip: 0.5          # Giới hạn cắt của policy_noise
@@ -65,14 +64,14 @@ algorithm:
     max_replay_buffer: 100000
 
   mo_sac:
-    n_generations: 1000
+    n_generations: 3000
     batch_size: 256
     hidden_size: 256
     lr: 0.0003
     gamma: 0.99              # Hệ số chiết khấu
     tau: 0.005               # Cập nhật mềm
 
-    action_scale: 8.0
+    action_scale: 6.0
     max_replay_buffer: 100000
 
   moead:
@@ -80,6 +79,6 @@ algorithm:
     n_generations: 60
     neighborhood_size: 15
     crossover_prob: 0.9
-    mutation_prob: 0.4
+    mutation_prob: 0.2
     eta_c: 20
     eta_m: 20

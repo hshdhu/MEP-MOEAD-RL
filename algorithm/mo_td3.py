@@ -122,14 +122,14 @@ class MultiObjectiveCritic(nn.Module):
 class MO_TD3:
     def __init__(self, env, **kwargs):
         self.env = env
-        self.dx = 5
+        self.dx = 6
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
         # Giữ nguyên 16 để tránh State Aliasing cho TD3
         self.base_state_dim = 13
         self.state_dim = 16
         self.action_dim = 1
-        self.action_scale = kwargs.get('action_scale', 8.0)
+        self.action_scale = kwargs.get('action_scale', 6.0)
 
         # [CẢI TIẾN 1]: Thêm biến này phục vụ cho Terminal Reward
         self.max_expected_length = np.hypot(env.width, env.height)

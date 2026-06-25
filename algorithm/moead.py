@@ -35,11 +35,12 @@ def reflect_clip(v, lo: float, hi: float):
 
 # --- Class MOEAD ---
 class MOEAD:
-    def __init__(self, env, dx=10, pop_size=50, n_generations=100,
+    def __init__(self, env, dx=6, pop_size=50, n_generations=100,
                  neighborhood_size=10, crossover_prob=0.9, mutation_prob=None,
-                 eta_c=20, eta_m=20, step_exposure=1.0, repair_attempts=50, length_max=500.0):
+                 eta_c=20, eta_m=20, step_exposure=1.0, repair_attempts=50):
         self.env = env
         self.dx = dx
+        self.max_dy = 6.0
         self.xs = list(np.arange(0, env.width + 1, dx))
         self.gene_length = len(self.xs)
         self.pop_size = pop_size
@@ -55,7 +56,6 @@ class MOEAD:
         self.eta_m = eta_m
         self.step_exposure = step_exposure
         self.repair_attempts = repair_attempts
-        self.length_max = length_max
 
         # Internal storage
         self.population = []
@@ -145,8 +145,6 @@ class MOEAD:
 
         exp = path.exposure(self.env.sensors, step=self.step_exposure, obstacles=self.env.obstacles)
         length = path.length()
-        if length > self.length_max:
-            return (float('inf'), float('inf'))
 
         return (-exp, length)
 
@@ -172,14 +170,15 @@ class MOEAD:
         # Single-point mutation
         for i in range(gene_len):
             if random.random() <= self.pm:
-                delta = random.uniform(-10, 10)
+                # Thay vì (-10, 10), giới hạn trong max_dy
+                delta = random.uniform(-self.max_dy, self.max_dy)
                 new_ys[i] = reflect_clip(new_ys[i] + delta, 0, self.env.height)
 
-        # Block mutation
+        # Block mutation (Giữ nguyên, repair_path sẽ tự vuốt mượt lại 2 đầu đoạn block)
         if random.random() < 0.3:
             block_size = random.randint(int(gene_len * 0.1), int(gene_len * 0.3))
             start_idx = random.randint(0, gene_len - block_size)
-            shift = random.uniform(-30, 30)
+            shift = random.uniform(-self.max_dy * 3, self.max_dy * 3)
             x_range = np.linspace(-np.pi, np.pi, block_size)
             weights = (np.cos(x_range) + 1) / 2
 
@@ -191,49 +190,36 @@ class MOEAD:
 
     def repair_path(self, ys, max_tries_per_point=30):
         ys_copy = ys.copy()
-        safe_min = 0.0
-        safe_max = self.env.height
 
-        # Removed `self.env.height` from the radius ladder: trying an
-        # offset as large as the whole map height almost always gets
-        # clipped straight to 0 or height, which is what was causing
-        # solutions to pile up on the boundary after repair. Capping
-        # the largest search radius keeps repairs local instead of
-        # dragging points to the map edge.
-        max_local_radius = min(self.env.height * 0.3, 80)
-        search_radii = [r for r in [2, 5, 10, 20, 40, 80] if r <= max_local_radius]
-        if not search_radii:
-            search_radii = [max_local_radius]
+        for i, x in enumerate(self.xs):
+            # 1. Xác định khung (window) giới hạn y hợp lệ dựa trên điểm trước đó
+            if i == 0:
+                y_min, y_max = 0.0, self.env.height
+            else:
+                y_min = max(0.0, ys_copy[i - 1] - self.max_dy)
+                y_max = min(self.env.height, ys_copy[i - 1] + self.max_dy)
 
-        for i, (x, y) in enumerate(zip(self.xs, ys_copy)):
-            is_in_obstacle = not self.env.is_valid_point(Point(x, y))
+            # 2. Ép (clip) giá trị y hiện tại vào giới hạn động học (giữ góc cua)
+            y = np.clip(ys_copy[i], y_min, y_max)
+            ys_copy[i] = y
 
-            if is_in_obstacle:
+            # 3. Kiểm tra chướng ngại vật tại vị trí (x, y)
+            if not self.env.is_valid_point(Point(x, y)):
                 found = False
 
-                for r in search_radii:
-                    for _ in range(max_tries_per_point):
-                        offset = random.uniform(-r, r)
-                        ny = reflect_clip(y + offset, safe_min, safe_max)
-                        if self.env.is_valid_point(Point(x, ny)):
-                            ys_copy[i] = ny
-                            found = True
-                            break
-                    if found: break
+                # CHỈ TÌM KIẾM ĐIỂM SỬA CHỮA TRONG KHOẢNG ĐÃ GIỚI HẠN [y_min, y_max]
+                for _ in range(max_tries_per_point):
+                    ny = random.uniform(y_min, y_max)
+                    if self.env.is_valid_point(Point(x, ny)):
+                        ys_copy[i] = ny
+                        found = True
+                        break
 
+                # Nếu không thể tìm được điểm an toàn mà vẫn giữ được góc -> Trả về None (loại bỏ cá thể này)
                 if not found:
-                    # Unbiased fallback: sample uniformly across the
-                    # whole valid range instead of an offset+clip that
-                    # would skew toward the edges.
-                    for _ in range(max_tries_per_point):
-                        ny = random.uniform(safe_min, safe_max)
-                        if self.env.is_valid_point(Point(x, ny)):
-                            ys_copy[i] = ny
-                            found = True
-                            break
-                    if not found:
-                        ys_copy[i] = random.uniform(safe_min, safe_max)
+                    return None
 
+                    # 4. Kiểm tra xem các đoạn nối giữa 2 điểm có cắt qua chướng ngại vật không
         final_path = ylist_to_path(self.xs, ys_copy)
         if self.env.is_valid_path(final_path):
             return ys_copy
@@ -255,13 +241,14 @@ class MOEAD:
             created = False
 
             for _ in range(50):
-                # Linear Noise Strategy
-                y1 = reflect_clip(target_y + random.uniform(-15.0, 15.0), 0, self.env.height)
-                y2 = reflect_clip(target_y + random.uniform(-40, 40), 0, self.env.height)
+                # Khởi tạo path bằng Random Walk tuân thủ giới hạn max_dy
+                start_y = reflect_clip(target_y + random.uniform(-15.0, 15.0), 0, self.env.height)
+                candidate = [start_y]
 
-                base = np.linspace(y1, y2, len(self.xs))
-                noise = np.random.normal(0, 5, len(self.xs))
-                candidate = reflect_clip(base + noise, 0, self.env.height).tolist()
+                for j in range(1, len(self.xs)):
+                    y_min = max(0.0, candidate[-1] - self.max_dy)
+                    y_max = min(self.env.height, candidate[-1] + self.max_dy)
+                    candidate.append(random.uniform(y_min, y_max))
 
                 repaired = self.repair_path(candidate, max_tries_per_point=20)
                 if repaired:
@@ -274,18 +261,18 @@ class MOEAD:
                     break
 
             if not created:
-                # Fallback: generate random path
-                rand_path = generate_random_path(
-                    self.env.width,
-                    self.env.height,
-                    dx=self.dx,
-                    obstacles=self.env.obstacles
-                )
-                if rand_path is not None and len(rand_path.points) == len(self.xs):
-                    pop_ylists.append(path_to_ylist(rand_path))
+                # Fallback: Tạo một đường đi an toàn tuân thủ góc
+                candidate = [random.uniform(0, self.env.height)]
+                for j in range(1, len(self.xs)):
+                    y_min = max(0.0, candidate[-1] - self.max_dy)
+                    y_max = min(self.env.height, candidate[-1] + self.max_dy)
+                    candidate.append(random.uniform(y_min, y_max))
+
+                rep = self.repair_path(candidate, 50)
+                if rep:
+                    pop_ylists.append(rep)
                 else:
-                    random_ylist = [random.uniform(0, self.env.height) for _ in self.xs]
-                    pop_ylists.append(random_ylist)
+                    pop_ylists.append(candidate)  # GA có thể loại bỏ cá thể này sau
 
         self.population = pop_ylists
         print(f"[MOEAD] Init done. Population size: {len(self.population)}")

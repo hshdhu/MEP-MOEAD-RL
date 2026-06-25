@@ -130,6 +130,7 @@ def main():
     plot_initial_environment(env_base, comp_plots_dir / "00_initial_environment.png")
 
     env_info = {
+        "environment_file": str(args.env_json),
         "width": env_base.width, "height": env_base.height,
         "n_sensors": len(env_base.sensors), "n_obstacles": len(env_base.obstacles)
     }
@@ -175,6 +176,10 @@ def main():
             env = config.get_environment(load_from_file=args.env_json)
             algo_cfg_name = algo_name.lower().replace("-", "_")
             algo_params = config.config.get('algorithm', {}).get(algo_cfg_name, {}).copy()
+
+            algo_params['dx'] = config.config.get('path', {}).get('dx', 6)
+            algo_params['step_exposure'] = config.config.get('exposure', {}).get('step', 1.0)
+            algo_params['repair_attempts'] = config.config.get('repair', {}).get('attempts', 40)
 
             current_max_episodes = algo_params.get('n_generations', 3000)
             pop_size = algo_params.get('pop_size', 1)
@@ -485,19 +490,28 @@ def main():
             plt.close()
 
     # =========================================================================
-    # 5. TÁCH FILE JSON (BẢO TOÀN DỮ LIỆU THÔ BACKUP)
+    # 5. TÁCH FILE JSON (BẢO TOÀN DỮ LIỆU THÔ BACKUP + THÊM MEAN/STD CHO ĐỒ ÁN)
     # =========================================================================
     print("💾 Đang xuất file JSON...")
     # Tóm tắt
     summary_data = {}
     for algo in algorithms:
+        # Lấy dữ liệu success rate cuối cùng
+        final_success_rates = [
+            raw_results[algo][s]['success_rate'][-1] if raw_results[algo][s]['success_rate'] else 0 for s in seeds]
+
         summary_data[algo] = {
-            "avg_time": float(np.mean([raw_results[algo][s]['time'] for s in seeds])),
-            "final_success_rate": float(np.mean(
-                [raw_results[algo][s]['success_rate'][-1] if raw_results[algo][s]['success_rate'] else 0 for s in
-                 seeds])),
+            "time_mean": float(np.mean([raw_results[algo][s]['time'] for s in seeds])),
+            "time_std": float(np.std([raw_results[algo][s]['time'] for s in seeds])),
+
+            "final_success_rate_mean": float(np.mean(final_success_rates)),
+            "final_success_rate_std": float(np.std(final_success_rates)),
+
             "final_hv_mean": float(np.mean(metrics[algo]['hv'][:, -1])),
-            "final_igd_mean": float(np.mean(metrics[algo]['igd'][:, -1]))
+            "final_hv_std": float(np.std(metrics[algo]['hv'][:, -1])),
+
+            "final_igd_mean": float(np.mean(metrics[algo]['igd'][:, -1])),
+            "final_igd_std": float(np.std(metrics[algo]['igd'][:, -1]))
         }
     save_json(summary_data, data_dir / "00_benchmark_summary.json")
 
@@ -512,7 +526,8 @@ def main():
          lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['actor_loss']]),
         ('critic_loss', raw_results,
          lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['critic_loss']]),
-        ('value', raw_results, lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['value']]),
+        ('value', raw_results,
+         lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['value']]),
         ('reward_exp', raw_results,
          lambda algo, s_idx: [clean_nan(x) for x in raw_results[algo][seeds[s_idx]]['reward_exp']]),
         ('reward_len', raw_results,
@@ -525,12 +540,37 @@ def main():
         metric_dict = {}
         for algo in algorithms:
             metric_dict[algo] = {}
+            all_seeds_data = []
+
+            # 1. Trích xuất dữ liệu gốc cho từng Seed
             for s_idx, seed in enumerate(seeds):
-                # MOEAD không có loss/reward, hàm extractor sẽ trả về list rỗng
-                metric_dict[algo][f"Seed_{seed}"] = extractor(algo, s_idx)
+                data = extractor(algo, s_idx)
+                metric_dict[algo][f"Seed_{seed}"] = data
+                all_seeds_data.append(data)
+
+            # 2. Tính Mean và Std cho từng bước thời gian (Dùng để vẽ biểu đồ Origin/Excel)
+            if all_seeds_data and len(all_seeds_data[0]) > 0:
+                try:
+                    # Đổi None sang np.nan để NumPy có thể tính toán chính xác
+                    calc_arr = np.array([[np.nan if v is None else v for v in s_data] for s_data in all_seeds_data],
+                                        dtype=np.float64)
+                    with np.errstate(invalid='ignore',
+                                     divide='ignore'):  # Tránh cảnh báo nếu cột toàn NaN (VD: MOEAD)
+                        mean_arr = np.nanmean(calc_arr, axis=0).tolist()
+                        std_arr = np.nanstd(calc_arr, axis=0).tolist()
+
+                    metric_dict[algo]["mean"] = [clean_nan(x) for x in mean_arr]
+                    metric_dict[algo]["std"] = [clean_nan(x) for x in std_arr]
+                except Exception:
+                    metric_dict[algo]["mean"] = []
+                    metric_dict[algo]["std"] = []
+            else:
+                metric_dict[algo]["mean"] = []
+                metric_dict[algo]["std"] = []
+
         save_json(metric_dict, data_dir / f"data_{metric_name}.json")
 
-    # Lưu riêng Shape của tập Pareto cuối cùng (Phục vụ vẽ Scatter)
+    # Lưu riêng Shape của tập Pareto cuối cùng (Phục vụ vẽ Scatter, không cần tính mean/std vì số lượng điểm khác nhau)
     pf_shape_dict = {}
     for algo in algorithms:
         pf_shape_dict[algo] = {}
@@ -539,10 +579,9 @@ def main():
     save_json(pf_shape_dict, data_dir / "data_final_pareto_shape.json")
 
     print("\n" + "=" * 60)
-    print(f"🎉 HOÀN TẤT BENCHMARK TOÀN DIỆN!")
+    print(f"🎉 HOÀN TẤT BENCHMARK TOÀN DIỆN (ĐÃ XUẤT MEAN+STD)!")
     print(f"📂 Kết quả lưu tại: {result_dir}")
     print("=" * 60)
-
 
 if __name__ == "__main__":
     main()

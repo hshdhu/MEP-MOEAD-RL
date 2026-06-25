@@ -55,14 +55,14 @@ class ActorCritic(nn.Module):
 class MO_PPO:
     def __init__(self, env, **kwargs):
         self.env = env
-        self.dx = 5
+        self.dx = 6
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
         self.base_state_dim = 13
         # [ĐÃ SỬA] Đổi thành 16 để khớp với TD3/SAC (13 base + w_exp + w_len + w_feas)
         self.state_dim = 16
         self.action_dim = 1
-        self.action_scale = 8.0
+        self.action_scale = 6.0
 
         self.lr = kwargs.get('lr', 3e-4)
         self.gamma = kwargs.get('gamma', 0.99)
