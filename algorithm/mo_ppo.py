@@ -49,9 +49,6 @@ class ActorCritic(nn.Module):
         return action_logprobs, v_exp, v_len, v_feas, dist_entropy
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. MO-PPO — FINAL BEST VERSION
-# ══════════════════════════════════════════════════════════════════════════════
 class MO_PPO:
     def __init__(self, env, **kwargs):
         self.env = env
@@ -59,7 +56,6 @@ class MO_PPO:
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
         self.base_state_dim = 13
-        # [ĐÃ SỬA] Đổi thành 16 để khớp với TD3/SAC (13 base + w_exp + w_len + w_feas)
         self.state_dim = 16
         self.action_dim = 1
         self.action_scale = 6.0
@@ -210,7 +206,6 @@ class MO_PPO:
 
         with torch.no_grad():
             _, old_v_exp, old_v_len, old_v_feas, _ = self.policy_old.evaluate(old_states, old_actions)
-            # ✅ SỬA: normalize value estimates để cùng scale với scal_returns
             old_v_scalar = (w_exp_t * safe_norm(old_v_exp) +
                             w_len_t * safe_norm(old_v_len) +
                             w_feas_t * safe_norm(old_v_feas))
@@ -248,7 +243,6 @@ class MO_PPO:
             with torch.no_grad():
                 self.policy.log_std.data.clamp_(min=-3.0, max=0.5)
 
-        # ✅ SỬA: log current_value từ policy MỚI sau khi đã update xong K_epochs
         with torch.no_grad():
             _, v_exp_new, v_len_new, v_feas_new, _ = self.policy.evaluate(old_states, old_actions)
             v_scalar_new = (w_exp_t * safe_norm(v_exp_new) +
@@ -265,15 +259,12 @@ class MO_PPO:
         batch_ret_exp, batch_ret_len, batch_ret_feas, batch_weights = [], [], [], []
         total_timesteps = 0
 
-        # [ĐÃ SỬA]: Xóa dòng _sample_weights() ở ngoài vòng lặp này
 
         for episode in range(1, self.max_episodes + 1):
 
-            # [ĐĐ SỬA]: Di chuyển việc sample weights vào TỪNG EPISODE giống hệt SAC/TD3
             w_exp, w_len = self._sample_weights()
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
-            # Start position
             sector = episode % 5
             target_y = [0.9, 0.7, 0.5, 0.3, 0.1][sector] * self.env.height
             low = max(0.0, target_y - 15.0)
@@ -289,7 +280,6 @@ class MO_PPO:
             for x in self.xs[1:]:
                 base_state = self.get_base_state(prev_x, state_y, prev_action)
 
-                # [ĐÃ SỬA]: Nối đủ 3 trọng số [w_exp, w_len, w_feas] để tạo state kích thước 16
                 state = np.append(base_state, [w_exp, w_len, w_feas]).astype(np.float32)
 
                 action, log_prob = self.select_action(state)
@@ -389,8 +379,6 @@ class MO_PPO:
                 batch_ret_feas.clear()
                 batch_weights.clear()
                 total_timesteps = 0
-
-                # [ĐÃ SỬA]: Xóa việc sample weights ở đây, vì đã chuyển lên đầu episode
 
             if verbose and episode % 100 == 0:
                 exp_str = f"{-objs[0]:.3f}" if objs[0] != float('inf') else "Crash"

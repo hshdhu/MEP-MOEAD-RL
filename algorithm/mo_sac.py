@@ -80,7 +80,7 @@ class Actor(nn.Module):
         dist = Normal(mu, std)
         x_t = dist.rsample()
         action = torch.tanh(x_t)
-        # Sửa lỗi log_prob của Tanh transform (chuẩn SAC)
+
         log_prob = dist.log_prob(x_t) - torch.log(1 - action.pow(2) + 1e-6)
         return action, log_prob.sum(-1, keepdim=True)
 
@@ -130,13 +130,11 @@ class MO_SAC:
         self.dx = 6
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # Khớp State Dim = 16 (13 Base + 3 Weights) y hệt MO-PPO / MO-TD3
         self.base_state_dim = 13
         self.state_dim = 16
         self.action_dim = 1
         self.action_scale = kwargs.get('action_scale', 6.0)
 
-        # [CẢI TIẾN 1]: Thêm biến max_expected_length
         self.max_expected_length = np.hypot(env.width, env.height)
 
         self.max_episodes = kwargs.get('n_generations', 1500)
@@ -176,7 +174,6 @@ class MO_SAC:
     def alpha(self):
         return self.log_alpha.exp()
 
-    # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
     def _sample_weights(self) -> tuple[float, float]:
         if np.random.rand() < 0.15:
             return (1.0, 0.0) if np.random.rand() < 0.5 else (0.0, 1.0)
@@ -237,7 +234,6 @@ class MO_SAC:
         if self.replay_buffer.size < self.batch_size: return
         s, a, r_e, r_l, r_f, s2, d = self.replay_buffer.sample(self.batch_size)
 
-        # Bóc tách Weights từ State 16 chiều
         w_exp = s[:, -3].unsqueeze(1)
         w_len = s[:, -2].unsqueeze(1)
         w_feas = s[:, -1].unsqueeze(1)
@@ -310,7 +306,6 @@ class MO_SAC:
     def run(self, verbose=True, callback=None):
         for episode in range(1, self.max_episodes + 1):
 
-            # Sử dụng logic sample weights đã cải tiến
             w_exp, w_len = self._sample_weights()
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
@@ -368,10 +363,9 @@ class MO_SAC:
                 state_y, prev_x, prev_action = next_y, x, action
                 current_points.append(next_point)
 
-            # [CẢI TIẾN 3]: Đánh giá cuối đường đi & Add Terminal Bonus giống hệt MO-PPO / MO-TD3
             if not crashed:
-                self.recent_successes.append(1) # [THÊM]
-                objs = self.evaluate_path(current_points) # (Đối với PPO/TD3 là current_pts)
+                self.recent_successes.append(1)
+                objs = self.evaluate_path(current_points)
                 self.update_ep(current_points, objs)
 
                 if objs[0] != float('inf') and len(episode_transitions) > 0:
@@ -384,7 +378,6 @@ class MO_SAC:
                     new_r_l = r_l + (max(0.0, self.max_expected_length - actual_len) * 0.5)
                     new_r_f = r_f + 50.0
 
-                    # Gán lại giá trị reward điểm cuối
                     episode_transitions[-1] = (s, a, new_r_e, new_r_l, new_r_f, ns, d)
             else:
                 self.recent_successes.append(0)

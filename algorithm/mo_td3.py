@@ -125,13 +125,11 @@ class MO_TD3:
         self.dx = 6
         self.xs = list(np.arange(0, env.width + 1, self.dx))
 
-        # Giữ nguyên 16 để tránh State Aliasing cho TD3
         self.base_state_dim = 13
         self.state_dim = 16
         self.action_dim = 1
         self.action_scale = kwargs.get('action_scale', 6.0)
 
-        # [CẢI TIẾN 1]: Thêm biến này phục vụ cho Terminal Reward
         self.max_expected_length = np.hypot(env.width, env.height)
 
         self.max_episodes = kwargs.get('n_episodes', kwargs.get('n_generations', 1500))
@@ -168,7 +166,6 @@ class MO_TD3:
         self.recent_successes = deque(maxlen=100)
         self.history_success_rate = []
 
-        # [CẢI TIẾN 2]: Sample weights giống hệt MO-PPO
     def _sample_weights(self) -> tuple[float, float]:
         if np.random.rand() < 0.15:
             return (1.0, 0.0) if np.random.rand() < 0.5 else (0.0, 1.0)
@@ -237,7 +234,6 @@ class MO_TD3:
 
         state, action, r_exp, r_len, r_feas, next_state, done = self.replay_buffer.sample(self.batch_size)
 
-        # Bóc tách weights (tại 3 vị trí cuối của vector state kích thước 16)
         w_exp = state[:, -3].unsqueeze(1)
         w_len = state[:, -2].unsqueeze(1)
         w_feas = state[:, -1].unsqueeze(1)
@@ -248,14 +244,12 @@ class MO_TD3:
 
             q1_tups, q2_tups = self.critic_target(next_state, next_action)
 
-            # Lấy min cho từng objective để chống Overestimation
             target_q_exp = r_exp + (1 - done) * self.gamma * torch.min(q1_tups[0], q2_tups[0])
             target_q_len = r_len + (1 - done) * self.gamma * torch.min(q1_tups[1], q2_tups[1])
             target_q_feas = r_feas + (1 - done) * self.gamma * torch.min(q1_tups[2], q2_tups[2])
 
         q1_curr, q2_curr = self.critic(state, action)
 
-        # Tổng hợp Loss của Critic cho 3 nhánh mục tiêu
         critic_loss_exp = F.mse_loss(q1_curr[0], target_q_exp) + F.mse_loss(q2_curr[0], target_q_exp)
         critic_loss_len = F.mse_loss(q1_curr[1], target_q_len) + F.mse_loss(q2_curr[1], target_q_len)
         critic_loss_feas = F.mse_loss(q1_curr[2], target_q_feas) + F.mse_loss(q2_curr[2], target_q_feas)
@@ -268,12 +262,10 @@ class MO_TD3:
 
         self.current_critic_loss = critic_loss.item()
 
-        # Update Actor trễ (Delayed Update)
         if self.total_it % self.policy_freq == 0:
             actor_action = self.actor(state)
             q1_exp_a, q1_len_a, q1_feas_a = self.critic.Q1(state, actor_action)
 
-            # Scalarization ngay tại hàm Loss của Actor (dựa vào weights của môi trường)
             q_scalar = w_exp * q1_exp_a + w_len * q1_len_a + w_feas * q1_feas_a
 
             self.current_value = q_scalar.mean().item()
@@ -310,7 +302,6 @@ class MO_TD3:
     def run(self, verbose=True, callback=None):
         for episode in range(1, self.max_episodes + 1):
 
-            # Sử dụng logic sample weights đã cải tiến
             w_exp, w_len = self._sample_weights()
             w_feas = max(0.2, 1.0 - 0.8 * (episode / self.max_episodes))
 
@@ -328,7 +319,6 @@ class MO_TD3:
             for i, x in enumerate(self.xs[1:]):
                 base_state = self.get_base_state(prev_x, state_y, prev_action)
 
-                # Nối đủ 3 trọng số vào state
                 state = np.append(base_state, [w_exp, w_len, w_feas]).astype(np.float32)
 
                 action = self.select_action(state, add_noise=True)
@@ -339,7 +329,6 @@ class MO_TD3:
                 prev_point, next_point = Point(prev_x, state_y), Point(x, next_y)
                 next_shapely = ShapelyPoint(x, next_y)
 
-                # Thu thập 3 mảng Reward
                 r_exp = sum(s.exposure_on_segment(prev_point, next_point, 1.0, self.env.obstacles) for s in
                             self.env.sensors) * 2.0
                 r_len = -0.05 - abs(action - prev_action) * 0.05
@@ -364,7 +353,6 @@ class MO_TD3:
                     progress_ratio = x / self.env.width
                     crash_penalty = -50.0 - (50.0 * progress_ratio)
 
-                    # Reward r_feas bị gánh penalty
                     episode_transitions.append((state, action, r_exp, r_len, r_feas + crash_penalty, next_state, done))
                     current_pts.append(next_point)
                     break
@@ -376,10 +364,9 @@ class MO_TD3:
                 state_y, prev_x, prev_action = next_y, x, action
                 current_pts.append(next_point)
 
-            # [CẢI TIẾN 3]: Đánh giá cuối đường đi & Add Terminal Bonus giống hệt MO-PPO
             if not crashed:
-                self.recent_successes.append(1)  # [THÊM]
-                objs = self.evaluate_path(current_pts)  # (Đối với PPO/TD3 là current_pts)
+                self.recent_successes.append(1)
+                objs = self.evaluate_path(current_pts)
                 self.update_ep(current_pts, objs)
 
                 if objs[0] != float('inf') and len(episode_transitions) > 0:
@@ -398,7 +385,6 @@ class MO_TD3:
                 self.recent_successes.append(0)  # [THÊM]
                 objs = (float('inf'), float('inf'))  # Hoặc [float('inf'), float('inf')] tùy file cũ
 
-            # [THÊM MỚI] Tính toán và lưu Moving Average Success Rate
             curr_sr = (sum(self.recent_successes) / len(self.recent_successes)) * 100.0 if self.recent_successes else 0.0
             self.history_success_rate.append(curr_sr)
 
