@@ -2,8 +2,8 @@
 environment:
   width: 300
   height: 300
-  num_sensors: 30
-  num_obstacles: 4
+  num_sensors: 60
+  num_obstacles: 6
   coverage_ratio: 0.2
 
 # Path Representation
